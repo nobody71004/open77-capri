@@ -3,7 +3,12 @@
 The Capri companion is a separate client mod. The server chip only adds the
 OS-slot inventory item; it does not install or summon the companion.
 
-## 1. Install Capri from its official source
+If your Open77 server requires Capri, the launcher installs it when you connect:
+accept the named package, let it download and verify, then launch. Do not copy
+Capri files by hand in that case; a manual copy is a foreign mod and the launcher
+will not overwrite it. See [LAUNCHER_MOD.md](LAUNCHER_MOD.md).
+
+## 1. Install Capri from its official source (manual or solo)
 
 Install **Capri: Personality Construct** `1.16.x` from its official mod page.
 This repository does not redistribute its archive, DLL, CET scripts, Redscript
@@ -20,9 +25,15 @@ The package should contain:
 ```
 archive/pc/mod/CapriPersonalityConstruct.archive
 red4ext/plugins/CapriPersonalityConstruct/
-bin/x64/plugins/cyber_engine_tweaks/mods/CapriPersonalityConstruct/
+bin/x64/plugins/cyber_engine_tweaks/mods/CapriVozReady/
 r6/scripts/CapriPersonalityConstruct/
 ```
+
+The launcher package deliberately contains **no CET UI**. It does not include
+`bin/x64/plugins/cyber_engine_tweaks/mods/CapriPersonalityConstruct/` (the F1
+chat/settings window). Only the no-UI `CapriVozReady` heartbeat is kept.
+Administrators who need the CET window install it separately on their own
+machine; it is never delivered to players.
 
 If your Open77 server distributes Capri as a package, use the package-split
 procedure in [PACKAGE_SPLIT.md](PACKAGE_SPLIT.md) so the five Codeware
@@ -30,8 +41,13 @@ dependencies are not present twice.
 
 ## 2. CapriVoz / OmniVoice (optional but recommended)
 
-CapriVoz provides her voice and ears. Put the CapriVoz folder next to the Capri
-plugin and set its local OmniVoice endpoint, normally:
+CapriVoz provides her voice and ears. The launcher package carries the CapriVoz
+scripts and voice profiles next to the plugin; the RED4ext plugin starts it with
+the game. On first launch it uses a Windows voice, so she is audible with no
+extra setup. Her cloned voice and ears need the optional local engine (about
+900 MB) installed from Capri's Connection tab or http://localhost:4325; it is a
+per-machine install and is not redistributed. To use an external
+OpenAI-compatible TTS server instead, set its endpoint, normally:
 
 ```text
 http://127.0.0.1:8880/v1
@@ -46,18 +62,22 @@ keeps its VRAM. The local OmniVoice model files are not included.
 
 After loading a save, outside the ripperdoc menu:
 
-- **F1** — Capri/CET window; use **Appearance → Show on HUD** to force a visual
-  test without an LLM.
 - **F7** — summon Capri (default; may be suppressed in menus).
 - **CapsLock** — hold to talk through the microphone.
 - **Enter** — open the text input.
 
-If F7 does nothing, use the F1 Appearance buttons. The Mod Settings page does
-not always expose these key overrides, but the buttons call the same functions.
+These are Capri Redscript input actions, not Open77 `RegisterKeyMapping`
+actions. They are configured in Capri's Mod Settings page and do not appear in
+Open77's keybind tab. The player package does not include the Capri CET window,
+so there is no F1 chat/settings window on a player install.
 
-## 4. Choose her brain
+## 4. Choose her brain (admin machine)
 
-In **F1 → Connection** you can choose:
+The player package has no CET Connection tab. Configure the provider on the
+admin machine through the `CapriMcpBridge` command file (or the separately
+installed official CET window), then distribute the resulting
+`r6/storages/CapriConstruct/settings.json` as part of the server's client
+profile. The provider choices are the same:
 
 - **Player2** — connect through the Player2 app or the browser device flow;
 - **Gemini (free)** — needs a Google AI Studio key;
@@ -71,7 +91,8 @@ generate lines.
 ## Optional local brain + CET bridge
 
 `client/mcp/capri-brain.mjs` is a small OpenAI-compatible endpoint. Capri's
-**local** provider points at it through CapriVoz:
+**local** provider points at it through CapriVoz. Configure it from the admin
+machine; the player package has no CET settings window:
 
 ```bash
 node client/mcp/capri-brain.mjs

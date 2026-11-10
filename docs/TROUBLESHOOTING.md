@@ -31,26 +31,33 @@ and sizes in `server.jsonc` and `open77.lua`.
 ## Capri is invisible
 
 - Step out of the ripperdoc/clinic menu; Capri suppresses keys and HUD in menus.
-- Open **F1 → Appearance → Show on HUD**. This forces a visual test without an
-  LLM.
-- **Take her outside** for the body.
+- The player package has **no Capri CET window**. On an admin machine that
+  installed the official window separately, use
+  **F1 → Appearance → Show on HUD** to force a visual test without an LLM; on a
+  normal player install, set `hud: true` in
+  `r6/storages/CapriConstruct/settings.json` and reload the save.
+- **Take her outside** for the body (admin CET window only).
 - Confirm the Capri archive is present:
   `archive/pc/mod/CapriPersonalityConstruct.archive`.
-- Confirm the RED4ext plugin and CET mod loaded; check the RED4ext/CET logs.
+- Confirm the RED4ext plugin and the no-UI `CapriVozReady` resource loaded; check
+  the RED4ext/CET logs.
 - Check `settings.json` has `hud: true`.
-- If no F1 window opens, CET itself is not drawing; fix CET before debugging
-  Capri.
 
 ## Capri is visible but does not talk
 
-- She needs a provider. Open **F1 → Connection**.
+- She needs a provider. The player package has no CET Connection tab; configure
+  it on the admin machine through `CapriMcpBridge` or the separately installed
+  official CET window, then check the resulting
+  `r6/storages/CapriConstruct/settings.json`.
 - Player2: connect through the app or browser device flow. An empty
   `player2_respuesta.json` and `player2Key` means no session.
-- Gemini/OpenAI/OpenRouter: set the key and model in the same tab.
+- Gemini/OpenAI/OpenRouter: set the key and model on the admin machine; never
+  put provider keys in the player package.
 - Local: ensure Ollama/LM Studio is running and the URL/model are correct.
 - CapriVoz being alive only means her **voice** is ready; it does not generate
   dialogue. `voz_latido.json` updating is not proof that an LLM is connected.
-- Check `GetMissingSetup()`/the red warning in the Connection tab.
+- Check `GetMissingSetup()` through the admin bridge, or the `missing` field in
+  `mcp_result.txt`.
 
 ## No voice
 

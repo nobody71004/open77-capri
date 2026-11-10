@@ -36,7 +36,7 @@ const MODEL =
     ? 'gpt-4.1-mini'
     : BACKEND === 'freebuff'
       ? process.env.OPENAI_MODEL || 'gpt-4o-mini'
-      : 'llama3.2:3b');
+      : 'qwen2.5:1.5b');
 const API_KEY =
   process.env.CAPRI_BRAIN_API_KEY ||
   process.env.OPENAI_API_KEY ||
@@ -45,6 +45,7 @@ const MAX_TOKENS = clampInt(process.env.CAPRI_BRAIN_MAX_TOKENS || 260, 32, 2_000
 const TOKEN_PARAM = process.env.CAPRI_BRAIN_TOKEN_PARAM || 'max_tokens';
 const VISION = process.env.CAPRI_BRAIN_VISION === '1';
 const REQUEST_TIMEOUT_MS = clampInt(process.env.CAPRI_BRAIN_TIMEOUT_MS || 180_000, 5_000, 300_000);
+const KEEP_ALIVE = process.env.CAPRI_BRAIN_KEEP_ALIVE || '30m';
 const STARTED_AT = Date.now();
 
 function clampInt(value, min, max) {
@@ -205,6 +206,7 @@ async function chat(req, res) {
     top_p: clampNumber(body.top_p, 0.95, 0, 1),
   };
   payload[TOKEN_PARAM] = clampInt(body.max_tokens ?? body.max_completion_tokens ?? MAX_TOKENS, 16, MAX_TOKENS);
+  if (BACKEND === 'ollama') payload.keep_alive = KEEP_ALIVE;
 
   let upstream;
   try {

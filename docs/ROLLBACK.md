@@ -42,6 +42,22 @@ Restore those files, restore the old `.open77/mods/<sha>.blob` and `.json`
 files, remove the new blobs only after confirming they are not referenced, and
 restart the unit. Do not delete `.open77/mods` wholesale.
 
+## Launcher-delivered mod
+
+The publisher backs up `server.jsonc` once as
+`server.jsonc.before-capri-launcher-mod` and leaves the blob content-addressed in
+`.open77/mods`. To stop requiring Capri:
+
+```bash
+ROOT=/opt/open77-xbuniverse          # or -staging
+cp -a "$ROOT/server.jsonc.before-capri-launcher-mod" "$ROOT/server.jsonc"
+systemctl restart open77-xbuniverse.service   # or the staging unit
+```
+
+Do not delete `.open77/mods` wholesale; other required mods share that store.
+Players who already installed Capri keep the world layer until they connect to a
+world that does not require it, at which point the launcher removes it.
+
 ## Optional brain
 
 - Restore `settings.json.before-capri-brain` if you changed the provider.

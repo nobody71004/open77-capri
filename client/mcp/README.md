@@ -48,15 +48,19 @@ curl -sS http://127.0.0.1:8890/v1/models
 
 ## Point Capri at it
 
-In Capri's F1 window:
+This is an **admin-machine** setup. The launcher package no longer ships Capri's
+F1 CET window, so use the CET bridge and the MCP `capri_configure_provider` tool
+from the PRAETOR desktop MCP to set provider/URL/model programmatically:
 
-1. **Connection → On your PC (Ollama, LM Studio)**.
+1. Provider: `local`.
 2. URL: `http://127.0.0.1:8890/v1`.
 3. Model: `capri-brain`.
-4. Save/close; the game will use CapriVoz's HTTP relay.
+4. Save; the game will use CapriVoz's HTTP relay.
 
-Alternatively, use the CET bridge plus the MCP `capri_configure_provider` tool
-from the PRAETOR desktop MCP to set provider/URL/model programmatically.
+On an admin machine that intentionally installs the official CET window
+separately, the same values can be entered under
+**Connection → On your PC (Ollama, LM Studio)**. That window is not part of the
+player package.
 
 ## MCP tools
 

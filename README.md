@@ -19,10 +19,14 @@ database, credentials, or third-party mod binaries.
   the Codeware package, avoiding duplicate Redscript definitions on the client.
 - **Codeware repair reference** — the exact dependency/package repair used when
   the Codeware asset package was missing from an Open77 install.
+- **Launcher-delivered mod** — a packager and server publisher that make Capri
+  an Open77 `requiredMods` package the launcher installs on connect. See
+  [docs/LAUNCHER_MOD.md](docs/LAUNCHER_MOD.md).
 - **Install, verification, rollback and troubleshooting docs.**
-- **Optional client tooling** — CapriVoz/OmniVoice example, CET control bridge,
-  and a local OpenAI-compatible Capri brain server. None of it is required for a
-  server to sell the chip.
+- **Optional client tooling** — CapriVoz/OmniVoice example, admin-only CET
+  control bridge, and a local OpenAI-compatible Capri brain server. None of it is
+  required for a server to sell the chip, and the launcher package does not ship
+  any CET UI.
 
 ## What is not included
 
@@ -94,8 +98,10 @@ them if your versions or Open77 package layout differ.
 ## Important behaviour
 
 The chip is an **inventory item**. Buying or equipping it does not summon the
-Capri hologram. The companion is a separate client mod and runs through its own
-CET/Redscript package; see [docs/CLIENT_SETUP.md](docs/CLIENT_SETUP.md).
+Capri hologram. The companion is a separate client mod. The Open77 Launcher can
+deliver it as a server-required mod and install it when the player connects; see
+[docs/LAUNCHER_MOD.md](docs/LAUNCHER_MOD.md) and
+[docs/CLIENT_SETUP.md](docs/CLIENT_SETUP.md).
 
 ## Verification
 
