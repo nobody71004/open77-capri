@@ -166,6 +166,25 @@ Read from the source that ships with REDmod (`tools/redmod/scripts`), not guesse
 - TVs: `TV.TurnOffScreen`/`TurnOnScreen` end in `m_uiComponent.Toggle(bool)` (tv.script).
 - LCD screens: the same `Toggle(bool)` (lcdScreen.script).
 - Lights: `ElectricLight` requests `gameLightComponent` for its sources; `vehicleLightComponent` derives from `gameLightComponent` (Codeware RTTI).
+- Billboards: vanilla `billboard.script` asks for `'AdvertisementWidgetComponent'` on its `ui` slot and switches it with `m_advUiComponent.Toggle(false)`. In the 2.31 RTTI table that class extends `IWorldWidgetComponent`, so the same screen test catches billboards, LCD screens, TVs and vending-machine ads.
+- Vehicles: `vehicleLightComponent` extends `gameLightComponent`, so headlights, brake lights and interior lights are switched by the light rule. Cars are also classified as their own kind so the log reports how many were reached.
+
+### Evidence behind those types
+
+The RTTI table the Red4ext plugin ships (`red4ext/plugins/Open77/rtti-manifest-2.31.json`) is the engine's own list of types a script may name, and it settles each one:
+
+| Name | Kind | Parent | Note |
+| --- | --- | --- | --- |
+| `IWorldWidgetComponent` | class, abstract | `WidgetBaseComponent` | screens, billboards, TVs |
+| `AdvertisementWidgetComponent` | class | `IWorldWidgetComponent` | billboards, vending ads |
+| `gameLightComponent` | class | `entLightComponent` | lamps, traffic lights |
+| `vehicleLightComponent` | class | `gameLightComponent` | headlights, brake, interior |
+| `vehicleBaseObject` | class | `gameObject` | the car entity |
+| `ScriptableService` | class, abstract | `IScriptable` | the area cache |
+
+`VehicleObject` is the script-side class Capri already casts to (`Capri.Actions.reds`), so it is safe here too; casting to a name that only exists as an enum value would not compile.
+
+One thing that table does *not* settle: `TSFMV` has no vehicle flag in 2.31 — only `Obj_Puppet`, `Obj_Player`, `Obj_Device`, `Obj_Sensor` and `Obj_Other`. So whether a targeting probe returns a car is unproven on paper, and the `vehicles=` count in a real cast is the test: a non-zero count in traffic means cars are reached, zero on a street full of parked cars means they are not.
 - Traffic lights: red, yellow and green are light components on the device, selected by `ToggleLightByNameEvent` (trafficLight.script), so the light-component switch covers them.
 - Warning/search lights: `BlindingLight` and `DestructibleMasterLight` are devices whose `TurnOffDevice` ends in their own light toggle; they are reached as entities.
 - Widget component names differ per device (`ui`, `ads`, `tv_ui`, `radio_ui`, `terminalui`), so components are selected by class, not by name.

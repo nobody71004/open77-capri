@@ -19,6 +19,23 @@
 // and green from light components on the device (trafficLight.script names them
 // in ToggleLightByNameEvent), so they darken through the same switch.
 //
+// EVERY TYPE IS CHECKED AGAINST THE 2.31 RTTI TABLE that ships with the Red4ext
+// plugin (red4ext/plugins/Open77/rtti-manifest-2.31.json), which is the engine's
+// own list of what a script may name:
+//   IWorldWidgetComponent      class, parent WidgetBaseComponent, native, abstract
+//   AdvertisementWidgetComponent class, parent IWorldWidgetComponent  (billboards)
+//   gameLightComponent         class, parent entLightComponent, native
+//   vehicleLightComponent      class, parent gameLightComponent       (headlights)
+//   vehicleBaseObject          class, parent gameObject                (cars)
+//   VehicleObject              the script-side vehicle class Capri already casts to
+//   ScriptableService          class, parent IScriptable, abstract    (the cache)
+// So the screen test is one cast for billboards, LCD screens, TVs and vending ads,
+// and the light test covers street lamps, traffic lights and vehicle lights.
+// What that table does NOT contain, and therefore proves nothing about, is a
+// vehicle flag in TSFMV (it lists only Obj_Puppet, Obj_Player, Obj_Device,
+// Obj_Sensor and Obj_Other), so whether a probe returns a car is settled by the
+// per-cast `vehicles=` count in a running game, not here.
+//
 // TWO MODES: Blink pulses everything it found for the whole duration, which reads
 // as an overload; Blackout holds it dark, which reads as a power cut. Blink is the
 // default and both are kept, because a blackout in the middle of a chase reads
@@ -32,7 +49,7 @@
 
 public class MassOverrideTarget {
   public let entityId: EntityID;
-  public let kind: Int32;   // 0 = npc, 1 = screen, billboard, light or vehicle
+  public let kind: Int32;   // 0 = person, 1 = screen, 2 = light, 3 = vehicle
   public let label: String; // class name, for the log
   public let area: String;  // 50 m cell the target stands in
 }
@@ -46,6 +63,19 @@ public class MassOverrideMode {
   public static func Blackout() -> Int32 { return 1; }
 }
 
+// Int32 constants for the same reason the modes are: they travel through a
+// cached entry and are compared with != , which compiles everywhere.
+public class MassOverrideKind {
+  public static func Person() -> Int32 { return 0; }
+  // Billboard, TV, LCD screen, vending-machine ad: anything with a world widget.
+  public static func Screen() -> Int32 { return 1; }
+  // Street lamp, traffic light, neon fitting: anything with a gameLightComponent.
+  public static func Light() -> Int32 { return 2; }
+  // A car: lights plus, sometimes, dashboard widgets. Its own kind so the log can
+  // say whether a probe reached any.
+  public static func Vehicle() -> Int32 { return 3; }
+}
+
 // What one cast actually did, for the log. The counters are the measurement: a
 // fill runs inside one frame, so sim time generally does not advance within it and
 // `seconds` is the whole cast measured outside, which can honestly read 0.
@@ -54,6 +84,9 @@ public class MassOverrideStats {
   public let parts: Int32;    // target parts returned by those queries
   public let people: Int32;   // npcs added
   public let devices: Int32;  // screens, lights and vehicles added
+  public let screens: Int32;  // of those, world widgets
+  public let lights: Int32;   // of those, light components that are not vehicles
+  public let vehicles: Int32; // of those, cars
   public let changed: Int32;  // components actually switched by the first pass
   public let cacheHit: Bool;  // the block's devices came from the cache
   public let blocks: Int32;   // areas the cache holds
@@ -322,10 +355,17 @@ public class MassOverrideProbe {
                   ArrayPush(seen, device.GetEntityID());
                   let screen: ref<MassOverrideTarget> = new MassOverrideTarget();
                   screen.entityId = device.GetEntityID();
-                  screen.kind = 1;
+                  screen.kind = MassOverrideEffects.KindOf(device);
                   screen.label = NameToString(device.GetClassName());
                   screen.area = MassOverrideArea.Cell(device.GetWorldPosition());
                   stats.devices += 1;
+                  if screen.kind == MassOverrideKind.Vehicle() {
+                    stats.vehicles += 1;
+                  } else if screen.kind == MassOverrideKind.Screen() {
+                    stats.screens += 1;
+                  } else {
+                    stats.lights += 1;
+                  }
                   ArrayPush(out, screen);
                   // The next probe: this is what makes the fill follow the street.
                   if ArraySize(frontier) < MassOverrideProbe.MaxProbes() {
@@ -405,6 +445,43 @@ public class MassOverrideEffects {
     if !IsDefined(component) { return false; }
     if IsDefined(component as IWorldWidgetComponent) { return true; }
     return IsDefined(component as gameLightComponent);
+  }
+
+  // What kind of thing this is, for the log and the cache. Vehicles are tested
+  // first: a car carries light components and sometimes dashboard widgets, so
+  // testing screens first would file it as a screen and hide the one number that
+  // says whether a probe reached any cars at all.
+  public static func KindOf(target: ref<GameObject>) -> Int32 {
+    if !IsDefined(target) { return MassOverrideKind.Screen(); }
+    if IsDefined(target as VehicleObject) { return MassOverrideKind.Vehicle(); }
+    if MassOverrideEffects.HasScreen(target) { return MassOverrideKind.Screen(); }
+    return MassOverrideKind.Light();
+  }
+
+  public static func HasScreen(target: ref<GameObject>) -> Bool {
+    if !IsDefined(target) { return false; }
+    let components: array<ref<IComponent>> = target.GetComponents();
+    let i: Int32 = 0;
+    while i < ArraySize(components) {
+      if IsDefined(components[i]) && IsDefined(components[i] as IWorldWidgetComponent) {
+        return true;
+      }
+      i += 1;
+    }
+    return false;
+  }
+
+  public static func HasLight(target: ref<GameObject>) -> Bool {
+    if !IsDefined(target) { return false; }
+    let components: array<ref<IComponent>> = target.GetComponents();
+    let i: Int32 = 0;
+    while i < ArraySize(components) {
+      if IsDefined(components[i]) && IsDefined(components[i] as gameLightComponent) {
+        return true;
+      }
+      i += 1;
+    }
+    return false;
   }
 }
 
