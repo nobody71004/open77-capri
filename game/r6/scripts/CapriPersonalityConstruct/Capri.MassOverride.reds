@@ -1,7 +1,8 @@
 // Capri: Mass Override - one action that changes many things around V at once.
 // Only Capri runs it (her own action code, no item or keybind).
 // Sandevistan is reference only; there is no time dilation here.
-// Sweep and effects live in Open77MassOverride.reds.
+// The multi-probe sweep, the area cells and the effects live in
+// Open77MassOverride.reds.
 module Capri
 
 public class CapriMassOverride extends IScriptable {
@@ -12,8 +13,8 @@ public class CapriMassOverride extends IScriptable {
     // Battery charge per cast, taken from the RAM pool (placeholder value).
     public static func ChargeCost() -> Float { return 25.0; }
 
-    // Sweep radius and target cap (matches the bridge in Open77MassOverride.reds).
-    public static func Radius() -> Float { return 40.0; }
+    // Targets one cast may change. The probe budget in MassOverrideProbe bounds
+    // how far the fill walks; this bounds how much it may change.
     public static func Cap() -> Int32 { return 1000; }
 
     // How long people stay hostile and the block stays dark before it reverts.
@@ -35,7 +36,8 @@ public class CapriMassOverride extends IScriptable {
         if CapriActions.Ram(player) < CapriMassOverride.ChargeCost() {
             return "not enough battery charge for Mass Override";
         }
-        let targets = MassOverrideSweep.Collect(player, CapriMassOverride.Radius(), CapriMassOverride.Cap());
+        // Probes chain outward from V, so this reaches past 40 m and around corners.
+        let targets = MassOverrideProbe.Collect(player, CapriMassOverride.Cap());
         if ArraySize(targets) == 0 {
             return "nothing to change around V";
         }

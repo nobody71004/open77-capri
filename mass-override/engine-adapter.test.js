@@ -78,6 +78,16 @@ test("a cast turns people hostile and blacks out screens, billboards, lights and
   assert.equal(adapter.events.at(-1).kind, "mass_override_end");
 });
 
+test("the broadcast names the areas the probes reached", () => {
+  const { adapter, layer, owner } = setup([
+    { id: "l1", type: "light", area: "Watson:4:2" },
+    { id: "l2", type: "light", area: "Watson:4:2" },
+    { id: "b1", type: "billboard", area: "Watson:5:2" },
+  ]);
+  layer.request(owner);
+  assert.deepEqual(adapter.events[0].areas.sort(), ["Watson:4:2", "Watson:5:2"]);
+});
+
 test("non-owner request does nothing and sweeps nothing", () => {
   const { adapter, layer } = setup([{ id: "npc1", type: "npc" }]);
   const res = layer.request({ id: "p2", ownsCapri: false, capriSummoned: true });

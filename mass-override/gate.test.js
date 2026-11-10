@@ -82,3 +82,21 @@ test("expire releases claims and returns targets to revert", () => {
   assert.deepEqual(done.revertIds, ["t0", "t1"]);
   assert.equal(mo._state.claims.size, 0);
 });
+
+test("a cast reports the areas its targets are in", () => {
+  const mo = createMassOverride({ cost: 0, cooldownMs: 0 });
+  mo.setBalance("a", 1);
+  const res = mo.cast(
+    owner("a"),
+    [
+      { id: "l1", type: "light", area: "Watson:4:2" },
+      { id: "l2", type: "light", area: "Watson:4:2" },
+      { id: "b1", type: "billboard", area: "Watson:5:2" },
+      { id: "n1", type: "npc" },
+    ],
+    0,
+  );
+  assert.equal(res.ok, true);
+  assert.deepEqual(res.event.areas.sort(), ["Watson:4:2", "Watson:5:2"]);
+  assert.equal(res.event.targets.length, 4, "targets without an area are still affected");
+});

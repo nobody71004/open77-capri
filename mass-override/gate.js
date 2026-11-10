@@ -3,7 +3,8 @@
 // Pure logic, no engine calls. The engine layer calls into this.
 
 const DEFAULTS = {
-  radius: 40,
+  reach: 25, // one probe's radius; probes chain, so coverage is not this number
+  probeBudget: 64, // probes per cast, mirrors MassOverrideProbe.MaxProbes()
   targetCap: 1000,
   cooldownMs: 120_000, // placeholder until the cooldown is decided
   cost: 25, // matches CapriMassOverride.ChargeCost() in the game scripts (RAM pool)
@@ -71,12 +72,17 @@ function createMassOverride(options = {}) {
       expiresAt,
     });
 
+    // The areas the cast actually reached, so a client can tell an Arroyo flood
+    // from a Badlands one without re-deriving them from coordinates.
+    const areas = [...new Set(targets.map((t) => t.area).filter(Boolean))];
+
     return {
       ok: true,
       event: {
         castId,
         casterId: player.id,
         targets,
+        areas,
         expiresAt,
       },
     };
