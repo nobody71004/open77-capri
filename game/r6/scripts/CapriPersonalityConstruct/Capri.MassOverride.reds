@@ -157,7 +157,9 @@ public class CapriMassOverride extends IScriptable {
                 + " services=" + services);
             // Said out loud, not inferred: a service that did not register explains a
             // mode that never alternates or a cache that never hits.
-            if !MassOverrideDiag.AllPresent() {
+            // Once per session, not once per cast: a service that never registers is
+            // still worth saying, but not 30 times a fight.
+            if !MassOverrideDiag.AllPresent() && MassOverrideDiag.ShouldWarn(game) {
                 FTLog("[MassOverride] service missing: " + services);
             }
         }

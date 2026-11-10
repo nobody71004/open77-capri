@@ -112,6 +112,7 @@ public class MassOverrideLightSwitch {
 public class MassOverridePrefs extends ScriptableService {
   private let m_pinned: Int32 = -1; // -1 = alternate, 0 = blink, 1 = blackout
   private let m_next: Int32 = 1;    // what the next unpinned cast uses (1 = blackout)
+  private let m_warnedMissing: Bool; // the one-time "service missing" line was printed
 
   public static func Get() -> ref<MassOverridePrefs> {
     let service: ref<MassOverridePrefs> =
@@ -138,6 +139,11 @@ public class MassOverridePrefs extends ScriptableService {
   public func Auto() -> Void { this.m_pinned = -1; }
 
   public func Pinned() -> Bool { return this.m_pinned >= 0; }
+
+  // Remembered here rather than in a static, because redscript has no static fields:
+  // the first service that does register carries the flag for the ones that did not.
+  public func WarnedMissing() -> Bool { return this.m_warnedMissing; }
+  public func MarkWarnedMissing() -> Void { this.m_warnedMissing = true; }
 }
 
 // Registration check for the two services above, so a service that never
@@ -175,6 +181,37 @@ public class MassOverrideDiag {
     let cache: String = MassOverrideDiag.CacheService();
     let prefs: String = MassOverrideDiag.PrefsService();
     return !Equals(cache, "cache=none") && !Equals(prefs, "prefs=none");
+  }
+
+  // How long the no-service fallback waits between warnings. An hour of sim time, so
+  // a session sees it a couple of times at most rather than on every cast.
+  public static func WarnWindowSeconds() -> Int32 { return 3600; }
+
+  // True only the first time a missing service is reported. Whichever service did
+  // register keeps the flag; if neither exists there is nowhere to remember it, so
+  // the warning is limited to the first second of each warn window instead of
+  // printing per cast. Either way the line stays visible and the log stays readable.
+  public static func ShouldWarn(game: GameInstance) -> Bool {
+    let prefs: ref<MassOverridePrefs> = MassOverridePrefs.Get();
+    if IsDefined(prefs) {
+      if prefs.WarnedMissing() { return false; }
+      prefs.MarkWarnedMissing();
+      return true;
+    }
+    let cache: ref<MassOverrideCache> = MassOverrideCache.Get();
+    if IsDefined(cache) {
+      if cache.WarnedMissing() { return false; }
+      cache.MarkWarnedMissing();
+      return true;
+    }
+    return MassOverrideDiag.InWarnWindow(game);
+  }
+
+  private static func InWarnWindow(game: GameInstance) -> Bool {
+    let now: Float = EngineTime.ToFloat(GameInstance.GetSimTime(game));
+    let seconds: Int32 = Cast<Int32>(now);
+    let block: Int32 = seconds / MassOverrideDiag.WarnWindowSeconds();
+    return seconds - block * MassOverrideDiag.WarnWindowSeconds() < 1;
   }
 }
 
@@ -248,6 +285,7 @@ public class MassOverrideCachedArea {
 // cache is an optimisation, never a requirement.
 public class MassOverrideCache extends ScriptableService {
   private let m_areas: array<ref<MassOverrideCachedArea>>;
+  private let m_warnedMissing: Bool; // the one-time "service missing" line was printed
 
   // Blocks remembered at once. Eight covers a district's worth of fights without
   // holding every light in Night City.
@@ -276,6 +314,9 @@ public class MassOverrideCache extends ScriptableService {
   public func AreaCount() -> Int32 {
     return ArraySize(this.m_areas);
   }
+
+  public func WarnedMissing() -> Bool { return this.m_warnedMissing; }
+  public func MarkWarnedMissing() -> Void { this.m_warnedMissing = true; }
 
   public func Forget() -> Void {
     ArrayClear(this.m_areas);
