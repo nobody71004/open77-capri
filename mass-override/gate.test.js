@@ -132,3 +132,41 @@ test("a cast reports the areas its targets are in", () => {
   assert.deepEqual(res.event.areas.sort(), ["Watson:4:2", "Watson:5:2"]);
   assert.equal(res.event.targets.length, 4, "targets without an area are still affected");
 });
+
+test("both players in one session run the mode the shared cursor handed out", () => {
+  const mo = createMassOverride({ cost: 0, cooldownMs: 0 });
+  mo.setBalance("a", 30);
+  mo.setBalance("b", 30);
+  const modes = [];
+  for (const id of ["a", "b", "a", "b"]) {
+    const res = mo.cast(owner(id), targets(1, `${id}-${modes.length}`), 0);
+    assert.ok(res.ok, `${id} should be able to cast`);
+    modes.push(res.event.mode);
+  }
+  assert.deepEqual(modes, ["blackout", "blink", "blackout", "blink"], "one sequence across both players");
+  assert.equal(mo._state.nextMode, "blackout", "the cursor is left on the next beat");
+});
+
+test("a refused cast does not consume the shared beat", () => {
+  const mo = createMassOverride({ cost: 0, cooldownMs: 0 });
+  mo.setBalance("a", 30);
+  mo.setBalance("b", 30);
+  // b does not own Capri, so this never reaches an effect and must not advance anything.
+  const refused = mo.cast({ id: "b", ownsCapri: false, capriSummoned: true }, targets(1, "r1"), 0);
+  assert.equal(refused.ok, false);
+  assert.equal(refused.reason, "not_owner");
+  assert.equal(mo._state.nextMode, "blackout", "the cursor did not move");
+
+  assert.equal(mo.cast(owner("a"), targets(1, "a1"), 0).event.mode, "blackout");
+  assert.equal(mo.cast(owner("b"), targets(1, "b1"), 0).event.mode, "blink", "b continues the same beat");
+  assert.equal(mo._state.nextMode, "blackout");
+
+  // The same holds for a cooldown refusal, not just an ownership one.
+  const cooled = createMassOverride({ cost: 0, cooldownMs: 1000 });
+  cooled.setBalance("a", 30);
+  cooled.setBalance("b", 30);
+  assert.equal(cooled.cast(owner("a"), targets(1, "c1"), 0).event.mode, "blackout");
+  assert.equal(cooled.cast(owner("a"), targets(1, "c2"), 0).reason, "on_cooldown");
+  assert.equal(cooled._state.nextMode, "blink", "the refused cast left the beat alone");
+  assert.equal(cooled.cast(owner("b"), targets(1, "c3"), 0).event.mode, "blink", "b takes the waiting beat");
+});

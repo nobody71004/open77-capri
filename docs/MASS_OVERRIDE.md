@@ -277,7 +277,7 @@ Still unverified:
 
 ## Verification status
 
-- Node tests: `node --test mass-override/gate.test.js mass-override/engine-adapter.test.js mass-override/dev-server.test.js mass-override/reds-lint.test.js` — 30/30 pass (gate, engine layer, the local server driven over HTTP, and the static script checker).
+- Node tests: `node --test mass-override/gate.test.js mass-override/engine-adapter.test.js mass-override/dev-server.test.js mass-override/reds-lint.test.js` — 33/33 pass (gate, engine layer, the local server driven over HTTP, and the static script checker).
 - Live server: a funded cast returned 200 with mode `blackout` and three targets, charged 25 of 100, then `on_cooldown`, `not_summoned` and `not_owner` each refused with 409 and no effects; a 400 ms cast expired and handed back its two claims for revert. This is the local shim, not the game: nobody in a session is being charged yet.
 - Game scripts: the last redscript build (2026-11-10 13:57Z) ended `Completed with 521 warnings and 0 errors` and included both Mass Override files. That build predates the current copies, so the current revision has NOT been compiled: `scc.exe` accepts only `.script`, and redscript runs only when the game starts. `reds-lint.js` — unbalanced braces, call arity, unknown methods, and symbols declared in either file — is clean on the current copies, which are byte-identical to the installed ones.
 - Not run in-game. Coverage, visuals and frame cost are unconfirmed.

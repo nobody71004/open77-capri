@@ -146,3 +146,23 @@ test("an unknown mode is refused and changes nothing", async () => {
     await srv.close();
   }
 });
+
+test("a refused cast over HTTP leaves the shared beat alone", async () => {
+  const srv = await start({ cooldownMs: 0, cost: 0 });
+  try {
+    await post(srv.base, "/players", { id: "p1", ownsCapri: true, capriSummoned: true, balance: 50 });
+    await post(srv.base, "/players", { id: "p2", ownsCapri: true, capriSummoned: false, balance: 50 });
+    const first = await post(srv.base, "/cast", { playerId: "p1", candidates: candidates(1, "a") });
+    assert.equal(first.status, 200);
+    assert.equal(first.body.event.mode, "blackout");
+
+    const refused = await post(srv.base, "/cast", { playerId: "p2", candidates: candidates(1, "b") });
+    assert.equal(refused.status, 409);
+    assert.equal(refused.body.reason, "not_summoned");
+
+    const state = await (await fetch(`${srv.base}/state`)).json();
+    assert.equal(state.nextMode, "blink", "the refusal did not consume the beat");
+  } finally {
+    await srv.close();
+  }
+});
