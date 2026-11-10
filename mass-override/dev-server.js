@@ -65,6 +65,7 @@ function createDevServer(options = {}) {
           balances: Object.fromEntries(s.balances),
           claims: Object.fromEntries(s.claims),
           active: Object.fromEntries(s.active),
+          modeNext: Object.fromEntries(s.modeNext),
         });
       }
       send(res, 404, { error: "not_found" });
