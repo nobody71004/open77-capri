@@ -1,4 +1,4 @@
-// Mass Override: the probe sweep and the effects, in one place.
+// Mass Override: the probe sweep, the per-area cache and the effects.
 //
 // HOSTILITY is the same call Open77PlayerModels.reds uses:
 // AttitudeAgent.SetAttitudeTowards(EAIAttitude.AIA_Hostile).
@@ -23,6 +23,10 @@
 // as an overload; Blackout holds it dark, which reads as a power cut. Blink is the
 // default and both are kept, because a blackout in the middle of a chase reads
 // differently from a strobing street.
+//
+// CACHE: the devices a fill found are kept per area, so a second flood in the same
+// block does not walk the street again. People are never cached: they move, so a
+// cache hit re-reads them with a single probe.
 //
 // Local test build only.
 
@@ -72,6 +76,128 @@ public class MassOverrideArea {
   }
 }
 
+// One probe result, kept so a later flood in the same block can reuse it.
+public class MassOverrideCachedTarget {
+  public let entityId: EntityID;
+  public let kind: Int32;
+  public let label: String;
+  public let cell: String; // the cell it was in when it was probed
+}
+
+public class MassOverrideCachedArea {
+  public let key: String;  // district:cell
+  public let cell: String;
+  public let targets: array<ref<MassOverrideCachedTarget>>;
+}
+
+// Probe results per area. Looked up the same way Capri's own storage service is
+// (class name in the scriptable service container). If the container ever hands
+// back null, Get() returns null and the sweep simply probes every time -- the
+// cache is an optimisation, never a requirement.
+public class MassOverrideCache extends ScriptableService {
+  private let m_areas: array<ref<MassOverrideCachedArea>>;
+
+  // Blocks remembered at once. Eight covers a district's worth of fights without
+  // holding every light in Night City.
+  public static func MaxAreas() -> Int32 { return 8; }
+
+  // Capri's and Codeware's services are registered module-qualified
+  // (n"Capri.CapriStorage", n"Codeware.UI.CustomPopupManager"), and this file has
+  // no module, so both spellings are tried rather than assumed. A null result
+  // only means the sweep probes every time.
+  public static func Get() -> ref<MassOverrideCache> {
+    let service: ref<MassOverrideCache> =
+      GameInstance.GetScriptableServiceContainer().GetService(n"MassOverrideCache") as MassOverrideCache;
+    if IsDefined(service) { return service; }
+    return GameInstance.GetScriptableServiceContainer().GetService(n"Open77.MassOverrideCache") as MassOverrideCache;
+  }
+
+  public func Known(key: String) -> Bool {
+    let i: Int32 = 0;
+    while i < ArraySize(this.m_areas) {
+      if Equals(this.m_areas[i].key, key) { return true; }
+      i += 1;
+    }
+    return false;
+  }
+
+  public func AreaCount() -> Int32 {
+    return ArraySize(this.m_areas);
+  }
+
+  public func Forget() -> Void {
+    ArrayClear(this.m_areas);
+  }
+
+  // Devices only. A person cached here would be stale the moment they walked on.
+  public func Remember(key: String, cell: String, targets: array<ref<MassOverrideTarget>>) -> Void {
+    let area: ref<MassOverrideCachedArea> = new MassOverrideCachedArea();
+    area.key = key;
+    area.cell = cell;
+    let i: Int32 = 0;
+    while i < ArraySize(targets) {
+      if targets[i].kind != 0 {
+        let cached: ref<MassOverrideCachedTarget> = new MassOverrideCachedTarget();
+        cached.entityId = targets[i].entityId;
+        cached.kind = targets[i].kind;
+        cached.label = targets[i].label;
+        cached.cell = targets[i].area;
+        ArrayPush(area.targets, cached);
+      }
+      i += 1;
+    }
+    let found: Bool = false;
+    let j: Int32 = 0;
+    while j < ArraySize(this.m_areas) {
+      if Equals(this.m_areas[j].key, key) {
+        this.m_areas[j] = area;
+        found = true;
+      }
+      j += 1;
+    }
+    if !found {
+      if ArraySize(this.m_areas) >= MassOverrideCache.MaxAreas() {
+        ArrayErase(this.m_areas, 0);
+      }
+      ArrayPush(this.m_areas, area);
+    }
+  }
+
+  // Only what is still there: the entity must still exist, still be switchable,
+  // and still be standing in the cell it was cached in. That last check is how a
+  // car that drove off drops out instead of being darkened somewhere else.
+  // Anything that fails is dropped from the entry as it is read.
+  public func Recall(game: GameInstance, key: String, cell: String) -> array<ref<MassOverrideTarget>> {
+    let out: array<ref<MassOverrideTarget>>;
+    let i: Int32 = 0;
+    while i < ArraySize(this.m_areas) {
+      if Equals(this.m_areas[i].key, key) {
+        let kept: array<ref<MassOverrideCachedTarget>>;
+        let j: Int32 = 0;
+        while j < ArraySize(this.m_areas[i].targets) {
+          let cached: ref<MassOverrideCachedTarget> = this.m_areas[i].targets[j];
+          let object: ref<GameObject> = GameInstance.FindEntityByID(game, cached.entityId) as GameObject;
+          if IsDefined(object) && Equals(cell, cached.cell)
+            && Equals(MassOverrideArea.Cell(object.GetWorldPosition()), cached.cell)
+            && MassOverrideEffects.CanBlink(object) {
+            let target: ref<MassOverrideTarget> = new MassOverrideTarget();
+            target.entityId = cached.entityId;
+            target.kind = cached.kind;
+            target.label = cached.label;
+            target.area = cached.cell;
+            ArrayPush(out, target);
+            ArrayPush(kept, cached);
+          }
+          j += 1;
+        }
+        this.m_areas[i].targets = kept;
+      }
+      i += 1;
+    }
+    return out;
+  }
+}
+
 // Multi-probe sweep.
 //
 // One query from V only reaches 40 m, which cannot see the next street's lamps or
@@ -88,7 +214,45 @@ public class MassOverrideProbe {
   // neighbourhood, so this bounds the work a cast can do.
   public static func MaxProbes() -> Int32 { return 64; }
 
+  // Entry point. A block whose devices are already cached costs one query for the
+  // people and nothing else.
   public static func Collect(player: ref<PlayerPuppet>, cap: Int32) -> array<ref<MassOverrideTarget>> {
+    let game: GameInstance = player.GetGame();
+    let position: Vector4 = player.GetWorldPosition();
+    let key: String = MassOverrideArea.Name(game, position);
+    let cell: String = MassOverrideArea.Cell(position);
+    let cache: ref<MassOverrideCache> = MassOverrideCache.Get();
+    if IsDefined(cache) && cache.Known(key) {
+      let out: array<ref<MassOverrideTarget>> = MassOverrideProbe.Fill(player, cap, false);
+      let devices: array<ref<MassOverrideTarget>> = cache.Recall(game, key, cell);
+      let i: Int32 = 0;
+      while i < ArraySize(devices) && ArraySize(out) < cap {
+        if !MassOverrideProbe.Has(out, devices[i].entityId) {
+          ArrayPush(out, devices[i]);
+        }
+        i += 1;
+      }
+      return out;
+    }
+    let probed: array<ref<MassOverrideTarget>> = MassOverrideProbe.Fill(player, cap, true);
+    if IsDefined(cache) {
+      cache.Remember(key, cell, probed);
+    }
+    return probed;
+  }
+
+  public static func Has(targets: array<ref<MassOverrideTarget>>, id: EntityID) -> Bool {
+    let i: Int32 = 0;
+    while i < ArraySize(targets) {
+      if Equals(targets[i].entityId, id) { return true; }
+      i += 1;
+    }
+    return false;
+  }
+
+  // The fill. With includeDevices false it is a single probe from V for people,
+  // because devices are what grow the frontier and those are already known.
+  public static func Fill(player: ref<PlayerPuppet>, cap: Int32, includeDevices: Bool) -> array<ref<MassOverrideTarget>> {
     let out: array<ref<MassOverrideTarget>>;
     let seen: array<EntityID>;
     let frontier: array<EntityID>;
@@ -129,7 +293,7 @@ public class MassOverrideProbe {
                   person.area = MassOverrideArea.Cell(npc.GetWorldPosition());
                   ArrayPush(out, person);
                 }
-              } else {
+              } else if includeDevices {
                 let device: ref<GameObject> = entity as GameObject;
                 if IsDefined(device) && !ArrayContains(seen, device.GetEntityID())
                   && MassOverrideEffects.CanBlink(device) {

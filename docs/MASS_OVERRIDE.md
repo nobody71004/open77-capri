@@ -61,6 +61,17 @@ Every target records the area it stands in (`MassOverrideTarget.area`), and a ca
 
 The district is the player's, not the target's, and that is a hard limit rather than a shortcut: there is no coordinate-to-district lookup on 2.31. District membership is authored as baked trigger volumes, and the engine will only name the district of the entity standing in one. `Open77Districts.reds` records the compiler-probed result for every guessable alternative.
 
+## Area cache
+
+A fill is up to 64 targeting queries, so its result is remembered per area (`MassOverrideCache`). The cache is a redscript service, looked up the way Capri's own storage service is (`GameInstance.GetScriptableServiceContainer().GetService(n"MassOverrideCache")`); if the container ever returns null, `Get()` returns null and the sweep probes every time, so the cache can only ever be a saving.
+
+- **Devices are cached**, capped at the 1000 target limit, for up to 8 areas (oldest dropped first).
+- **People are never cached.** They move, so a cache hit still runs `Fill(player, cap, false)`: one query from V for the people around V, and nothing else. A repeated flood in a known block therefore costs one query instead of up to 64.
+- **A hit only changes what is still there.** Every cached entry is re-checked as it is read: the entity must still exist, still have a switchable widget or light component, and still be standing in the cell it was cached in. Anything that fails is dropped from the entry, which is how a destroyed billboard or a car that drove off stops being a target.
+- The cache lives for the session. It is not saved, so a reload starts with an empty one.
+
+One consequence: on a cache hit, people are gathered only around V, because the devices that would have carried the fill further down the street are not probed again. In a known block the second flood turns fewer distant people than the first.
+
 ## Target ownership (conflicts)
 
 - A target can be claimed by one Mass Override at a time.
@@ -161,5 +172,5 @@ Still unverified:
 3. Probe budget and reach: 64 × 25 m is a starting point, not a measurement.
 4. Whether component toggling is enough for every light type, or some need `ToggleLight`.
 5. Whether the revert should restore a device that was already off.
-6. Whether areas should be persisted across casts, so a second flood in the same block skips probing.
-7. Whether a 1 s blink pulse over 1000 targets is cheap enough, or the interval needs to be longer.
+6. Whether a 1 s blink pulse over 1000 targets is cheap enough, or the interval needs to be longer.
+7. Whether the cache should also keep people per cell, refreshed rather than reused, so a repeat flood reaches the same distance.
