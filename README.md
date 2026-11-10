@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/hero.svg" alt="Open77 Capri: Personality Construct header" width="100%">
+  <img src="https://files.catbox.moe/kykt1u.png" alt="Open77 Capri: Personality Construct header with the in-game Capri avatar" width="100%">
 </p>
 
 # Open77 Capri
