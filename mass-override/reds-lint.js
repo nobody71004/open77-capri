@@ -48,15 +48,22 @@ function strip(src) {
 
 const lineOf = (text, index) => text.slice(0, index).split("\n").length;
 
-// Splits an argument list on top-level commas, respecting nesting.
+// Splits an argument list on top-level commas, respecting nesting. Angle brackets
+// track generics (ref<X>, array<ref<Y>>) in their own counter: a comparison such as
+// `StrLen(target) > 0 ? a : b` inside an argument is not a closing bracket, and
+// neither is the arrow in `->`. Counting them with the round brackets made a
+// three-argument call read as two.
 function splitArgs(raw) {
   const args = [];
   let depth = 0;
+  let angle = 0;
   let current = "";
   for (const ch of raw) {
-    if ("<([{".includes(ch)) depth += 1;
-    if (">)]}".includes(ch)) depth -= 1;
-    if (ch === "," && depth === 0) {
+    if ("([{".includes(ch)) depth += 1;
+    else if (")]}".includes(ch)) depth -= 1;
+    else if (ch === "<") angle += 1;
+    else if (ch === ">" && angle > 0) angle -= 1;
+    if (ch === "," && depth === 0 && angle === 0) {
       args.push(current);
       current = "";
       continue;

@@ -41,10 +41,15 @@ check() {
   fi
 }
 
-# The dispatch line is the only thing outside these two files, and it is part of
-# Capri's own action switch, not an edit this project makes.
-check "$CAPRI/Capri.Actions.reds" 'case "mass_override"' \
+# The dispatch cases are the only thing outside these two files. They live in Capri's
+# own action switch, and both have to be there: the cast, and the live mode control
+# that mirrors the dev server's /mode route.
+check "$CAPRI/Capri.Actions.reds" 'case "mass_override":' \
   'case "mass_override": return CapriMassOverride.Run(player, CapriSystem.Get(player.GetGame()));'
+check "$CAPRI/Capri.Actions.reds" 'case "mass_override_mode":' \
+  'case "mass_override_mode": return CapriMassOverride.SetModeFromAction(target);'
+check "$CAPRI/Capri.Actions.reds" 'mass_override_mode' \
+  'the prompt line that lets Capri choose mass_override_mode'
 
 if [ "$status" -ne 0 ]; then
   echo >&2

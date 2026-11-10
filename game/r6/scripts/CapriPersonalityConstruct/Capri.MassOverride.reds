@@ -90,6 +90,33 @@ public class CapriMassOverride extends IScriptable {
         if IsDefined(prefs) { prefs.Auto(); }
     }
 
+    // Live control, the counterpart of the dev server's POST /mode: pin blink or
+    // blackout for every following cast, or "auto" (also "alternate") to go back to
+    // one mode per cast. Capri's action switch calls this with what V asked for, so a
+    // session can be switched and switched back with no restart and no keybind.
+    // Returns the mode in force ("blink", "blackout", "auto"), or "" when the word is
+    // not a mode: nothing changes and the caller says nothing.
+    public static func SetModeFromAction(target: String) -> String {
+        let prefs: ref<MassOverridePrefs> = MassOverridePrefs.Get();
+        if !IsDefined(prefs) {
+            return "";
+        }
+        let word: String = StrLower(target);
+        if Equals(word, "blink") {
+            prefs.Pin(MassOverrideMode.Blink());
+            return "blink";
+        }
+        if Equals(word, "blackout") || Equals(word, "black") {
+            prefs.Pin(MassOverrideMode.Blackout());
+            return "blackout";
+        }
+        if Equals(word, "auto") || Equals(word, "alternate") || Equals(word, "both") {
+            prefs.Auto();
+            return "auto";
+        }
+        return "";
+    }
+
     // Run from CapriActions.Run. Returns "" when it worked, else why not (for the LLM and log).
     public static func Run(player: ref<PlayerPuppet>, system: ref<CapriSystem>) -> String {
         return CapriMassOverride.RunWith(player, system, CapriMassOverride.Mode(player.GetGame()));
