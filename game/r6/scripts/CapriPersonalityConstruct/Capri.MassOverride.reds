@@ -87,7 +87,7 @@ public class CapriMassOverride extends IScriptable {
                 MassOverrideEffects.SetHostile(object as NPCPuppet, player, true);
             } else {
                 // Blink leaves the block lit for the first pulse; blackout drops it now.
-                stats.changed += MassOverrideEffects.Blink(object, !blackout);
+                stats.changed += MassOverrideEffects.BlinkReported(object, !blackout, stats);
             }
             i += 1;
         }
@@ -132,6 +132,9 @@ public class CapriMassOverride extends IScriptable {
                 + " devices=" + ToString(stats.devices)
                 + " screens=" + ToString(stats.screens)
                 + " lights=" + ToString(stats.lights)
+                + " lightStates=" + ToString(stats.lightStates)
+                + " lightFallbacks=" + ToString(stats.lightFallbacks)
+                + " lightEvents=" + ToString(stats.lightEvents)
                 + " vehicles=" + ToString(stats.vehicles)
                 + " changed=" + ToString(stats.changed)
                 + " targets=" + ToString(ArraySize(targets))

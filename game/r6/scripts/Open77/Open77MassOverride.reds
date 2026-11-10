@@ -84,6 +84,17 @@ public class MassOverrideKind {
   public static func Vehicle() -> Int32 { return 3; }
 }
 
+// Which switch actually moved a light, as bit values so a light that needed both
+// paths can say so. This is what tells whether the entity event and the light's own
+// state are carrying a blackout, or whether the component fallback is doing all the
+// work on its own.
+public class MassOverrideLightSwitch {
+  public static func None() -> Int32 { return 0; }
+  public static func State() -> Int32 { return 1; }     // ToggleLight moved it
+  public static func Component() -> Int32 { return 2; } // only the component switch did
+  public static func Both() -> Int32 { return 3; }
+}
+
 // Which mode a cast uses. This is Mass Override's own state: no Capri setting, no
 // other Capri file, no keybind and no item.
 //
@@ -173,6 +184,9 @@ public class MassOverrideStats {
   public let screens: Int32;  // of those, world widgets
   public let lights: Int32;   // of those, light components that are not vehicles
   public let vehicles: Int32; // of those, cars
+  public let lightStates: Int32;    // lights whose own on/off (ToggleLight) changed
+  public let lightFallbacks: Int32; // lights only the component switch could change
+  public let lightEvents: Int32;    // entities a ToggleLightEvent was queued to
   public let changed: Int32;  // components actually switched by the first pass
   public let cacheHit: Bool;  // the block's devices came from the cache
   public let blocks: Int32;   // areas the cache holds
@@ -501,6 +515,13 @@ public class MassOverrideEffects {
   // on, whereas ToggleLight sets the light's own on/off. The vanilla billboard
   // does exactly this through ToggleLightEvent, so that event is queued too.
   public static func Blink(target: ref<GameObject>, on: Bool) -> Int32 {
+    // Counts thrown away: the pulses, the hold and the revert only need the work
+    // done. The cast itself uses BlinkReported so the log can attribute it.
+    return MassOverrideEffects.BlinkReported(target, on, new MassOverrideStats());
+  }
+
+  // The same switch, reporting which path changed what.
+  public static func BlinkReported(target: ref<GameObject>, on: Bool, stats: ref<MassOverrideStats>) -> Int32 {
     if !IsDefined(target) { return 0; }
     let changed: Int32 = 0;
     let hasLight: Bool = false;
@@ -517,8 +538,15 @@ public class MassOverrideEffects {
         let light: ref<gameLightComponent> = components[i] as gameLightComponent;
         if IsDefined(light) {
           hasLight = true;
-          if MassOverrideEffects.SetLight(light, on) {
+          let path: Int32 = MassOverrideEffects.SetLight(light, on);
+          if path != MassOverrideLightSwitch.None() {
             changed += 1;
+          }
+          if path == MassOverrideLightSwitch.State() || path == MassOverrideLightSwitch.Both() {
+            stats.lightStates += 1;
+          }
+          if path == MassOverrideLightSwitch.Component() || path == MassOverrideLightSwitch.Both() {
+            stats.lightFallbacks += 1;
           }
         }
       }
@@ -532,6 +560,7 @@ public class MassOverrideEffects {
       evt.toggle = on;
       evt.loop = false;
       target.QueueEvent(evt);
+      stats.lightEvents += 1;
     }
     return changed;
   }
@@ -545,27 +574,33 @@ public class MassOverrideEffects {
   // changes (no light state to set, or a component that ignores ToggleLight) is
   // still hidden by disabling the component, which is how every screen is switched.
   // Both express the same desired state, so they cannot fight each other.
-  private static func SetLight(light: ref<gameLightComponent>, on: Bool) -> Bool {
-    let changed: Bool = false;
+  private static func SetLight(light: ref<gameLightComponent>, on: Bool) -> Int32 {
+    let path: Int32 = MassOverrideLightSwitch.None();
     if light.IsOn() != on {
       light.ToggleLight(on, false);
-      changed = true;
+      path = MassOverrideLightSwitch.State();
     }
     if light.IsEnabled() != on {
       light.Toggle(on);
-      changed = true;
+      if path == MassOverrideLightSwitch.State() {
+        path = MassOverrideLightSwitch.Both();
+      } else {
+        path = MassOverrideLightSwitch.Component();
+      }
     }
-    return changed;
+    return path;
   }
 
   // One swipe of the whole target list: dark or lit. Used by the blackout (once
   // dark, restored at revert) and by each pulse of the blink.
   public static func SetAll(game: GameInstance, targets: array<ref<MassOverrideTarget>>, lit: Bool) -> Void {
+    // One sink for the whole swipe: the pulses and the hold do not report.
+    let sink: ref<MassOverrideStats> = new MassOverrideStats();
     let i: Int32 = 0;
     while i < ArraySize(targets) {
       if targets[i].kind != 0 {
         let object: ref<GameObject> = GameInstance.FindEntityByID(game, targets[i].entityId) as GameObject;
-        MassOverrideEffects.Blink(object, lit);
+        MassOverrideEffects.BlinkReported(object, lit, sink);
       }
       i += 1;
     }

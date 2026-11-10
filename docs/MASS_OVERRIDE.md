@@ -87,6 +87,11 @@ What each field means when you are chasing the 100 / 500 / 1000 target numbers:
 - `parts` — target parts those queries returned, i.e. everything the targeting system looked at before filtering.
 - `devices` / `people` — what survived the filter and became targets.
 - `changed` — components actually switched by the first pass. Screens have several widgets, so this exceeds `devices`.
+- `lightStates` — lights whose own on/off state (`ToggleLight`) was switched. This is the path that should be doing the work.
+- `lightFallbacks` — lights that only the component switch could move, i.e. the fallback carrying them because their state did not change.
+- `lightEvents` — entities a `ToggleLightEvent` was queued to (once per entity that has a light, not once per light).
+
+Those three are what answer "which path is actually working". `lightStates` high and `lightFallbacks` near zero means the light state and the entity event are doing it. `lightFallbacks` tracking or exceeding `lightStates` means `ToggleLight` is not moving those lights and the component disable is carrying the blackout — and if the street still comes back on, that fallback is being undone by the device controller. `lightEvents` counts only what was queued, never whether the receiving controller honoured it, which is the part no script can observe.
 - `targets` — size of the list handed to the effect, i.e. what the cap applied to. `targets` near `cap` means the cap, not the block, is the limit.
 - `cache` / `blocks` — whether the devices came from the area cache and how many areas it holds.
 - `services` — which service name actually registered, or `none`. `cache=MassOverrideCache prefs=MassOverridePrefs` is healthy; `Open77.` prefixed names mean the module-qualified spelling is the one being served; `none` means that service did not register, and a separate `[MassOverride] service missing:` line is then logged on the same cast so it cannot be missed. This is the field that distinguishes "the mode never changes" from "the mode service never loaded", and "the cache never hits" from "the cache service is absent".
