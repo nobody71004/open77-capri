@@ -192,6 +192,23 @@ Two faults, both in the mode plumbing:
 
 1. **It was switched once and then overwritten.** A device's own controller keeps its screen and lights in step with its state, so it switches its component back on within a frame or two. The blink survived that because each pulse re-asserts twice a second; the blackout toggled once at the start and was silently undone, which read as nothing happening. Blackout now uses `MassOverrideHold`, which re-asserts dark every second for the whole duration, and the revert lights it back up after.
 2. **The mode was being decided by an unrelated setting.** `Mode()` mapped `settings.unleashed` onto blackout. That field is Capri's quickhack-tier setting (`Capri.Storage.reds`: "her quickhacks at their strongest tier"), true by default and off for anyone paying per-target RAM — so blackout was unreachable for anyone who had turned it off, and switched on without being asked for anyone who had not. `Mode()` now returns `MassOverrideMode.Blink()` and says to change that one line for blackout; `RunWith(player, system, mode)` remains the explicit door.
+
+### How a light is switched now
+
+Screens stay on the component switch, because that is exactly what the vanilla screen classes do (`lcdScreen.TurnOffScreen` is `m_uiComponent.Toggle(false)`). Lights do not work that way. Disabling a light *component* only hides it until a device controller enables the component again — which is what a blackout kept losing to.
+
+So a light is switched by its own state instead. The 2.31 RTTI table lists `gameLightComponent.ToggleLight(on, loop)` and `IsOn()`, so `SetLight` compares `IsOn()` and calls `ToggleLight` only when the state differs. The entity is then also sent the event vanilla's own billboard queues:
+
+```redscript
+let evt: ref<ToggleLightEvent> = new ToggleLightEvent();
+evt.toggle = on;
+evt.loop = false;
+target.QueueEvent(evt);
+```
+
+Both paths set a desired state rather than flipping one, so running them together is idempotent — the event covers lights that belong to a mesh or a child entity, and `ToggleLight` covers props that never handle the event. Constructing and queueing a vanilla event from redscript is the pattern Capri already uses and compiles with (`target.QueueEvent(new QuickHackExplodeExplosive())`), so this is not a new mechanism.
+
+`SetLight` returning false when `IsOn()` already matches is what makes the blackout hold cheap: each one-second re-assert only touches the lights a device has switched back on.
 - Traffic lights: red, yellow and green are light components on the device, selected by `ToggleLightByNameEvent` (trafficLight.script), so the light-component switch covers them.
 - Warning/search lights: `BlindingLight` and `DestructibleMasterLight` are devices whose `TurnOffDevice` ends in their own light toggle; they are reached as entities.
 - Widget component names differ per device (`ui`, `ads`, `tv_ui`, `radio_ui`, `terminalui`), so components are selected by class, not by name.
