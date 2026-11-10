@@ -35,6 +35,10 @@ public class CapriMassOverride extends IScriptable {
     // `settings.unleashed` is her quickhack tier (Capri.Storage.reds: "her quickhacks
     // at their strongest tier"), and mapping a visual mode onto it made blackout
     // unreachable for anyone who had that turned off.
+    //
+    // A mode the server broadcast for this cast wins over both the pin and the local
+    // cursor (see ReceiveServerMode), so every client in a session runs the same
+    // beat. With no broadcast the local sequence decides.
     public static func Mode(game: GameInstance) -> Int32 {
         let prefs: ref<MassOverridePrefs> = MassOverridePrefs.Get();
         if IsDefined(prefs) { return prefs.Mode(); }
@@ -55,6 +59,22 @@ public class CapriMassOverride extends IScriptable {
             return MassOverrideMode.Blackout();
         }
         return MassOverrideMode.Blink();
+    }
+
+    // The one call the multiplayer layer makes when a cast arrives: hand over the mode
+    // the server broadcast and it is consumed by the next cast. Kept as a static on
+    // this class so the receive path never has to know about MassOverridePrefs.
+    public static func ReceiveServerMode(mode: Int32) -> Void {
+        let prefs: ref<MassOverridePrefs> = MassOverridePrefs.Get();
+        if IsDefined(prefs) { prefs.ReceiveServerMode(mode); }
+    }
+
+    // Where the last cast's mode came from, for the log line: "server" when a
+    // broadcast supplied it, "local" when the pin, the cursor or the clock did.
+    public static func ModeSource() -> String {
+        let prefs: ref<MassOverridePrefs> = MassOverridePrefs.Get();
+        if IsDefined(prefs) && prefs.LastFromServer() { return "server"; }
+        return "local";
     }
 
     // Fix a mode for every following cast, or pass -1 to alternate again. Both are
@@ -137,6 +157,7 @@ public class CapriMassOverride extends IScriptable {
             // single frame, so it can honestly read 0.000.
             let services: String = MassOverrideDiag.Describe();
             FTLog("[MassOverride] mode=" + (blackout ? "blackout" : "blink")
+                + " modeSource=" + CapriMassOverride.ModeSource()
                 + " area=" + MassOverrideArea.Name(game, player.GetWorldPosition())
                 + " cache=" + (stats.cacheHit ? "hit" : "miss")
                 + " blocks=" + ToString(stats.blocks)

@@ -112,6 +112,8 @@ public class MassOverrideLightSwitch {
 public class MassOverridePrefs extends ScriptableService {
   private let m_pinned: Int32 = -1; // -1 = alternate, 0 = blink, 1 = blackout
   private let m_next: Int32 = 1;    // what the next unpinned cast uses (1 = blackout)
+  private let m_serverMode: Int32 = -1; // mode a server broadcast named, waiting for its cast
+  private let m_lastFromServer: Bool;   // the last Mode() came from a broadcast, not the cursor
   private let m_warnedMissing: Bool; // the one-time "service missing" line was printed
 
   public static func Get() -> ref<MassOverridePrefs> {
@@ -123,7 +125,12 @@ public class MassOverridePrefs extends ScriptableService {
 
   // Each cast consumes one: this is the per-cast choice. A null service leaves the
   // caller on blink, so the fallback is the old behaviour rather than no effect.
+  // A broadcast mode is taken first: the server owns the beat for the whole session,
+  // so a client must not advance its own cursor past what everyone else is running.
+  // The pin and the local cursor only apply when no broadcast is waiting.
   public func Mode() -> Int32 {
+    let served: Int32 = this.TakeServerMode();
+    if served >= 0 { return served; }
     if this.m_pinned >= 0 { return this.m_pinned; }
     let mode: Int32 = this.m_next;
     if mode == MassOverrideMode.Blink() {
@@ -133,6 +140,30 @@ public class MassOverridePrefs extends ScriptableService {
     }
     return mode;
   }
+
+  // Called by the multiplayer layer when a cast arrives carrying the mode the server
+  // broadcast. It is held for exactly one cast, so a cast that never runs locally
+  // cannot leave a mode behind for the next one. Anything that is not a real mode is
+  // ignored rather than stored.
+  public func ReceiveServerMode(mode: Int32) -> Void {
+    if mode != MassOverrideMode.Blink() && mode != MassOverrideMode.Blackout() { return; }
+    this.m_serverMode = mode;
+  }
+
+  // -1 when nothing is waiting; otherwise the broadcast mode, consumed.
+  public func TakeServerMode() -> Int32 {
+    if this.m_serverMode < 0 {
+      this.m_lastFromServer = false;
+      return -1;
+    }
+    let mode: Int32 = this.m_serverMode;
+    this.m_serverMode = -1;
+    this.m_lastFromServer = true;
+    return mode;
+  }
+
+  // Whether the last cast took its mode from a broadcast. Read for the cast log line.
+  public func LastFromServer() -> Bool { return this.m_lastFromServer; }
 
   public func Pin(mode: Int32) -> Void { this.m_pinned = mode; }
 
