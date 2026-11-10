@@ -19,11 +19,10 @@
 // and green from light components on the device (trafficLight.script names them
 // in ToggleLightByNameEvent), so they darken through the same switch.
 //
-// Warning and search lights are separate devices too (blindingLight.script,
-// electricLight/alarmLight.script), so they come through the same path. What this
-// can NOT reach is lighting baked into sector geometry: a light that is not an
-// entity component is not addressable from script, and cityLightSystem has no
-// public switch for it.
+// TWO MODES: Blink pulses everything it found for the whole duration, which reads
+// as an overload; Blackout holds it dark, which reads as a power cut. Blink is the
+// default and both are kept, because a blackout in the middle of a chase reads
+// differently from a strobing street.
 //
 // Local test build only.
 
@@ -32,6 +31,15 @@ public class MassOverrideTarget {
   public let kind: Int32;   // 0 = npc, 1 = screen, billboard, light or vehicle
   public let label: String; // class name, for the log
   public let area: String;  // 50 m cell the target stands in
+}
+
+// Kept as Int32 constants rather than an enum so the mode can be passed through a
+// DelayCallback field and compared with a plain != , which compiles everywhere.
+public class MassOverrideMode {
+  // Pulse the lights and screens for the duration. Default.
+  public static func Blink() -> Int32 { return 0; }
+  // Hold them dark for the duration, then restore.
+  public static func Blackout() -> Int32 { return 1; }
 }
 
 // The area a target is in. There is no coordinate-to-district lookup on 2.31 --
@@ -188,6 +196,19 @@ public class MassOverrideEffects {
     return changed;
   }
 
+  // One swipe of the whole target list: dark or lit. Used by the blackout (once
+  // dark, restored at revert) and by each pulse of the blink.
+  public static func SetAll(game: GameInstance, targets: array<ref<MassOverrideTarget>>, lit: Bool) -> Void {
+    let i: Int32 = 0;
+    while i < ArraySize(targets) {
+      if targets[i].kind != 0 {
+        let object: ref<GameObject> = GameInstance.FindEntityByID(game, targets[i].entityId) as GameObject;
+        MassOverrideEffects.Blink(object, lit);
+      }
+      i += 1;
+    }
+  }
+
   // A screen is any world widget component. A light is a gameLightComponent,
   // which is what ElectricLight requests for a street light, a lamp or a traffic
   // light; vehicleLightComponent derives from it, so headlights match too.
@@ -197,6 +218,33 @@ public class MassOverrideEffects {
     if !IsDefined(component) { return false; }
     if IsDefined(component as IWorldWidgetComponent) { return true; }
     return IsDefined(component as gameLightComponent);
+  }
+}
+
+// Blink mode: pulses everything it was given until the duration runs out, then
+// leaves the block lit. Each pulse re-arms itself on the delay system, so a
+// dismissed Capri does not stop it.
+public class MassOverridePulse extends DelayCallback {
+  public let game: GameInstance;
+  public let targets: array<ref<MassOverrideTarget>>;
+  public let cyclesLeft: Int32;
+  public let lit: Bool; // the state this pulse switches to
+
+  public static func Interval() -> Float { return 1.0; }
+
+  public func Call() -> Void {
+    MassOverrideEffects.SetAll(this.game, this.targets, this.lit);
+    if this.cyclesLeft > 1 {
+      let next: ref<MassOverridePulse> = new MassOverridePulse();
+      next.game = this.game;
+      next.targets = this.targets;
+      next.cyclesLeft = this.cyclesLeft - 1;
+      next.lit = !this.lit;
+      GameInstance.GetDelaySystem(this.game).DelayCallback(next, MassOverridePulse.Interval(), false);
+    } else {
+      // Whatever the last pulse did, end lit rather than dark.
+      MassOverrideEffects.SetAll(this.game, this.targets, true);
+    }
   }
 }
 

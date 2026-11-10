@@ -78,6 +78,12 @@ test("a cast turns people hostile and blacks out screens, billboards, lights and
   assert.equal(adapter.events.at(-1).kind, "mass_override_end");
 });
 
+test("the broadcast carries the mode the cast ran in", () => {
+  const { adapter, layer, owner } = setup([{ id: "l1", type: "light" }], { mode: "blackout" });
+  layer.request(owner);
+  assert.equal(adapter.events[0].mode, "blackout");
+});
+
 test("the broadcast names the areas the probes reached", () => {
   const { adapter, layer, owner } = setup([
     { id: "l1", type: "light", area: "Watson:4:2" },

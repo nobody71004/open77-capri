@@ -83,6 +83,16 @@ test("expire releases claims and returns targets to revert", () => {
   assert.equal(mo._state.claims.size, 0);
 });
 
+test("blink is the default mode and blackout stays selectable", () => {
+  const blink = createMassOverride({ cost: 0, cooldownMs: 0 });
+  blink.setBalance("a", 1);
+  assert.equal(blink.cast(owner("a"), targets(1, "x"), 0).event.mode, "blink");
+
+  const blackout = createMassOverride({ cost: 0, cooldownMs: 0, mode: "blackout" });
+  blackout.setBalance("a", 1);
+  assert.equal(blackout.cast(owner("a"), targets(1, "y"), 0).event.mode, "blackout");
+});
+
 test("a cast reports the areas its targets are in", () => {
   const mo = createMassOverride({ cost: 0, cooldownMs: 0 });
   mo.setBalance("a", 1);

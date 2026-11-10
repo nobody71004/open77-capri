@@ -67,11 +67,22 @@ The district is the player's, not the target's, and that is a hard limit rather 
 - A second cast's sweep skips claimed targets until the claim expires.
 - Claims are per target `EntityID`, so two casts in different cells never collide, and two casts in the same cell cannot double-apply one device.
 
+## Modes
+
+Two modes, both kept:
+
+- **Blink** (default, `MassOverrideMode.Blink`). Lights and screens strobe for the whole duration: one pulse per second, each pulse re-armed on the delay system (`MassOverridePulse`), then the block ends lit. Reads as an overload rather than a power cut.
+- **Blackout** (`MassOverrideMode.Blackout`). Everything goes dark at once and stays dark for the duration, then restores. Reads as a power cut, which is a different beat in a chase.
+
+NPCs turn hostile in both modes; the mode only changes what happens to screens and lights.
+
+Which one Capri gets: `CapriMassOverride.Mode()` reads her own stock `settings.unleashed` flag — normal is blink, unleashed is blackout. That flag already exists in her build, so selecting a mode needs no new storage field and no edit to another Capri file. `RunWith(player, system, mode)` is the explicit door for a per-action choice later, without changing `Run`'s signature that `Capri.Actions.reds` calls.
+
 ## Effects and duration
 
 - Duration: 30 s (`CapriMassOverride.Duration`, `DEFAULTS.durationMs`).
 - NPCs: `AttitudeAgent.SetAttitudeTowards(AIA_Hostile)`, reverted to `AIA_Neutral`.
-- Screens, billboards, TVs, lights, traffic lights and vehicle lights: the entity's widget and light components are switched off, then switched back on at revert.
+- Screens, billboards, TVs, lights, traffic lights and vehicle lights: the entity's widget and light components are switched, then switched back on at revert.
 - Revert runs on the delay system (`MassOverrideRevert extends DelayCallback`), so dismissing Capri does not end the effect early.
 - A device that was already off before the cast is switched on by the revert. Tracking each component's prior state is **TBD**.
 
@@ -83,7 +94,7 @@ The district is the player's, not the target's, and that is a hard limit rather 
 
 ## Broadcast
 
-- One event per cast: caster, target IDs and types, areas reached, effect, end time.
+- One event per cast: caster, target IDs and types, areas reached, mode (`blink` or `blackout`), end time.
 - Clients apply the visual result of that event; they do not choose targets.
 
 ## Where it lives
@@ -151,3 +162,4 @@ Still unverified:
 4. Whether component toggling is enough for every light type, or some need `ToggleLight`.
 5. Whether the revert should restore a device that was already off.
 6. Whether areas should be persisted across casts, so a second flood in the same block skips probing.
+7. Whether a 1 s blink pulse over 1000 targets is cheap enough, or the interval needs to be longer.

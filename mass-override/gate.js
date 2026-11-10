@@ -9,6 +9,7 @@ const DEFAULTS = {
   cooldownMs: 120_000, // placeholder until the cooldown is decided
   cost: 25, // matches CapriMassOverride.ChargeCost() in the game scripts (RAM pool)
   durationMs: 30_000,
+  mode: "blink", // "blink" (default) or "blackout"; mirrors CapriMassOverride.Mode()
 };
 
 const REASONS = {
@@ -83,6 +84,7 @@ function createMassOverride(options = {}) {
         casterId: player.id,
         targets,
         areas,
+        mode: cfg.mode,
         expiresAt,
       },
     };
