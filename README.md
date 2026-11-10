@@ -1,5 +1,7 @@
 <p align="center">
-  <img src="https://files.catbox.moe/y070lo.png" alt="Capri" width="100%">
+  <img src="https://github.com/nobody71004/open77-capri/releases/download/capri-header-v1/capri-header.png" alt="Capri" width="100%">
+  <br>
+  <sub>Mirror: <a href="https://files.catbox.moe/y070lo.png">files.catbox.moe</a></sub>
 </p>
 
 # Open77 Capri
