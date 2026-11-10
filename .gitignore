@@ -1,0 +1,30 @@
+# Secrets and local state
+.env
+.env.*
+!.env.example
+
+# Third-party mods and generated assets (never commit these)
+*.zip
+*.archive
+*.dll
+*.exe
+*.wav
+*.blob
+*.pak
+*.r6pack
+
+# Backups created by the installers
+*.bak
+*.before-*
+backups/
+vendor/
+secrets/
+
+# Runtime output
+logs/
+*.log
+node_modules/
+__pycache__/
+*.py[cod]
+.DS_Store
+Thumbs.db

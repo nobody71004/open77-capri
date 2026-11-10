@@ -1,0 +1,17 @@
+{
+  "_note": "Illustrative only. CapriVoz field names vary by version; compare with your own config.json before replacing it. Never commit real keys.",
+  "proveedor": "openai",
+  "puerto": 4325,
+  "openai": {
+    "servidor": "omnivoice",
+    "url": "http://127.0.0.1:8880/v1",
+    "voz": "capri",
+    "modelo": "tts-1",
+    "clave": "",
+    "iniciar": "%LOCALAPPDATA%\\CapriVoz\\omnivoice\\Iniciar OmniVoice.bat"
+  },
+  "oido": {
+    "proveedor": "windows",
+    "idioma": ""
+  }
+}

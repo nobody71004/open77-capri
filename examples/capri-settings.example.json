@@ -1,0 +1,15 @@
+{
+  "_note": "Illustrative. Back up your real settings.json before changing it. Keys are deliberately empty here; never commit real keys.",
+  "provider": "local",
+  "localUrl": "http://127.0.0.1:8890/v1",
+  "localModel": "capri-brain",
+  "voiceMode": "auto",
+  "hud": true,
+  "tts": true,
+  "subtitles": true,
+  "player2Key": "",
+  "openaiKey": "",
+  "geminiKey": "",
+  "openrouterKey": "",
+  "customKey": ""
+}

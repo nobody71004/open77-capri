@@ -1,0 +1,19 @@
+@echo off
+title OmniVoice (Capri)
+rem OmniVoice for Capri Voz: http://127.0.0.1:8880/v1. Capri Voz opens it hidden when it's her voice.
+cd /d "%~dp0"
+set "HF_HOME=%~dp0modelos"
+set "HF_HUB_DISABLE_XET=1"
+set "OMNIVOICE_PROFILE_DIR=%~dp0perfiles"
+set "PYTHONIOENCODING=utf-8"
+rem auto: CUDA when the game is closed, CPU while Cyberpunk is running so the
+rem 8 GB card keeps its VRAM for the game. Override with CAPRI_OMNIVOICE_DEVICE.
+set "DEVICE=%CAPRI_OMNIVOICE_DEVICE%"
+if not defined DEVICE set "DEVICE=auto"
+if /I "%DEVICE%"=="auto" (
+  set "DEVICE=cuda"
+  tasklist /FI "IMAGENAME eq Cyberpunk2077.exe" 2>nul | find /I "Cyberpunk2077.exe" >nul && set "DEVICE=cpu"
+)
+set "STEPS=12"
+if /I "%DEVICE%"=="cpu" set "STEPS=8"
+"%~dp0python\python.exe" -m omnivoice_server --host 127.0.0.1 --port 8880 --device %DEVICE% --timeout 180 --num-step %STEPS%
