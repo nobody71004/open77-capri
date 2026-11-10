@@ -31,6 +31,14 @@
 //   ScriptableService          class, parent IScriptable, abstract    (the cache)
 // So the screen test is one cast for billboards, LCD screens, TVs and vending ads,
 // and the light test covers street lamps, traffic lights and vehicle lights.
+//
+// SWITCHING A LIGHT is not the same as switching a screen. A screen is the
+// component itself (vanilla: m_uiComponent.Toggle(false)), but a light is switched
+// by its own state: gameLightComponent has ToggleLight(on, loop) and IsOn() in the
+// RTTI table, and the vanilla billboard instead queues a ToggleLightEvent
+// (evt.toggle = on) to the entity. Component disable alone is what a blackout was
+// fighting against, because a controller can enable the component again; the light
+// state and the event both stick. Both are used here.
 // What that table does NOT contain, and therefore proves nothing about, is a
 // vehicle flag in TSFMV (it lists only Obj_Puppet, Obj_Player, Obj_Device,
 // Obj_Sensor and Obj_Other), so whether a probe returns a car is settled by the
@@ -407,20 +415,57 @@ public class MassOverrideEffects {
 
   // Switches every light and screen on this entity on or off. Returns how many
   // actually changed, so a revert is a no-op on anything that was already off.
+  //
+  // Screens keep using the component switch, because that is what the vanilla
+  // screen classes do (lcdScreen TurnOffScreen -> m_uiComponent.Toggle(false)).
+  // Lights use the light's own state, not the component: Toggle(false) only
+  // disables the component, which a device's controller can turn straight back
+  // on, whereas ToggleLight sets the light's own on/off. The vanilla billboard
+  // does exactly this through ToggleLightEvent, so that event is queued too.
   public static func Blink(target: ref<GameObject>, on: Bool) -> Int32 {
     if !IsDefined(target) { return 0; }
     let changed: Int32 = 0;
+    let hasLight: Bool = false;
     let components: array<ref<IComponent>> = target.GetComponents();
     let i: Int32 = 0;
     while i < ArraySize(components) {
-      let component: ref<IComponent> = components[i];
-      if MassOverrideEffects.IsBlinkable(component) && component.IsEnabled() != on {
-        component.Toggle(on);
-        changed += 1;
+      let widget: ref<IWorldWidgetComponent> = components[i] as IWorldWidgetComponent;
+      if IsDefined(widget) {
+        if widget.IsEnabled() != on {
+          widget.Toggle(on);
+          changed += 1;
+        }
+      } else {
+        let light: ref<gameLightComponent> = components[i] as gameLightComponent;
+        if IsDefined(light) {
+          hasLight = true;
+          if MassOverrideEffects.SetLight(light, on) {
+            changed += 1;
+          }
+        }
       }
       i += 1;
     }
+    // The same event billboard.script queues: evt.toggle = on; QueueEvent(evt).
+    // Queued once per entity, after the per-component pass, so lights that sit on
+    // a mesh or a child rather than on a component of their own follow too.
+    if hasLight {
+      let evt: ref<ToggleLightEvent> = new ToggleLightEvent();
+      evt.toggle = on;
+      evt.loop = false;
+      target.QueueEvent(evt);
+    }
     return changed;
+  }
+
+  // gameLightComponent.ToggleLight(on, loop) and IsOn() are both in the 2.31 RTTI
+  // table. State is compared first so a revert does not re-run a light that is
+  // already where it should be, and so the hold can tell whether a device has
+  // switched its light back on behind us.
+  private static func SetLight(light: ref<gameLightComponent>, on: Bool) -> Bool {
+    if light.IsOn() == on { return false; }
+    light.ToggleLight(on, false);
+    return true;
   }
 
   // One swipe of the whole target list: dark or lit. Used by the blackout (once
