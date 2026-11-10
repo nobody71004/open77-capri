@@ -54,6 +54,7 @@ check "$CAPRI/Capri.Actions.reds" 'mass_override_mode' \
 if [ "$status" -ne 0 ]; then
   echo >&2
   echo "Capri has no mass_override action to reach. See docs/MASS_OVERRIDE.md." >&2
+  echo "Re-apply the integration with: node mass-override/patch-capri-actions.js \"$GAME\"" >&2
   exit 1
 fi
 

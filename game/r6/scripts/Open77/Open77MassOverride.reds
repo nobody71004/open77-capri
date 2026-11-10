@@ -113,6 +113,7 @@ public class MassOverridePrefs extends ScriptableService {
   private let m_pinned: Int32 = -1; // -1 = alternate, 0 = blink, 1 = blackout
   private let m_next: Int32 = 1;    // what the next unpinned cast uses (1 = blackout)
   private let m_serverMode: Int32 = -1; // mode a server broadcast named, waiting for its cast
+  private let m_lastCastAt: Float = -1.0; // sim time of the last charged cast, -1 = never
   private let m_lastFromServer: Bool;   // the last Mode() came from a broadcast, not the cursor
   private let m_warnedMissing: Bool; // the one-time "service missing" line was printed
 
@@ -164,6 +165,12 @@ public class MassOverridePrefs extends ScriptableService {
 
   // Whether the last cast took its mode from a broadcast. Read for the cast log line.
   public func LastFromServer() -> Bool { return this.m_lastFromServer; }
+
+  // The cooldown lives here rather than in a static because redscript has no static
+  // fields, and here rather than in Capri's storage because it belongs to Mass
+  // Override: the same service the gate's per-player clock mirrors.
+  public func LastCastAt() -> Float { return this.m_lastCastAt; }
+  public func MarkCastAt(now: Float) -> Void { this.m_lastCastAt = now; }
 
   public func Pin(mode: Int32) -> Void { this.m_pinned = mode; }
 

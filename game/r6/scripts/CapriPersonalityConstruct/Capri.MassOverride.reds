@@ -24,6 +24,20 @@ public class CapriMassOverride extends IScriptable {
     // How long people stay hostile and the block stays lit or dark before it reverts.
     public static func Duration() -> Float { return 30.0; }
 
+    // How long before the next cast may be paid for. The gate keeps the same clock
+    // per player (mass-override/gate.js, 120_000 ms); without it here the game would
+    // let V cast as fast as RAM allows while the server refused the same casts.
+    public static func Cooldown() -> Float { return 120.0; }
+
+    // What a cast costs out of the RAM pool. Capri's own hacks are free when she is set
+    // not to use RAM and scale with ramScale (Capri.Actions.reds: Pay), so a cast costs
+    // what hers cost instead of a number that ignores the setting. 0.0 = free.
+    public static func Cost() -> Float {
+        let settings = CapriStorage.Get().settings;
+        if !settings.useRam { return 0.0; }
+        return CapriMassOverride.ChargeCost() * settings.ramScale;
+    }
+
     // 1 logs one measurement line per cast. Set it false to silence the log.
     public static func Instrumented() -> Bool { return true; }
 
@@ -135,19 +149,38 @@ public class CapriMassOverride extends IScriptable {
         if !IsDefined(player) || !IsDefined(system) {
             return "not ready";
         }
-        if CapriActions.Ram(player) < CapriMassOverride.ChargeCost() {
+        let cost: Float = CapriMassOverride.Cost();
+        if cost > 0.0 && CapriActions.Ram(player) < cost {
             return "not enough battery charge for Mass Override";
         }
         let game: GameInstance = player.GetGame();
         let started: Float = EngineTime.ToFloat(GameInstance.GetSimTime(game));
+        // The recharge is part of the cast, not a courtesy: a session can pay RAM for
+        // one cast per cooldown, the same as the gate charges.
+        let prefs: ref<MassOverridePrefs> = MassOverridePrefs.Get();
+        if IsDefined(prefs) && prefs.LastCastAt() >= 0.0 {
+            let waited: Float = started - prefs.LastCastAt();
+            if waited < CapriMassOverride.Cooldown() {
+                let left: Int32 = RoundF(CapriMassOverride.Cooldown() - waited);
+                return "Mass Override is still recharging: " + ToString(left) + "s";
+            }
+        }
         let stats: ref<MassOverrideStats> = new MassOverrideStats();
         // Probes chain outward from V, so this reaches past 40 m and around corners.
         let targets = MassOverrideProbe.Collect(player, CapriMassOverride.Cap(), stats);
         if ArraySize(targets) == 0 {
             return "nothing to change around V";
         }
-        GameInstance.GetStatPoolsSystem(game).RequestChangingStatPoolValue(
-            Cast<StatsObjectID>(player.GetEntityID()), gamedataStatPoolType.Memory, -CapriMassOverride.ChargeCost(), player, false, false);
+        // The same call Capri's own hacks make (Capri.Actions.reds: Spend), so the
+        // charge goes through the game's stat pool rather than a number kept here.
+        // The read is taken first: the pool change is a request, so a value read back
+        // in this frame would still be the pre-charge one.
+        let ramBefore: Float = CapriActions.Ram(player);
+        if cost > 0.0 {
+            GameInstance.GetStatPoolsSystem(game).RequestChangingStatPoolValue(
+                Cast<StatsObjectID>(player.GetEntityID()), gamedataStatPoolType.Memory, -cost, player, false, false);
+        }
+        if IsDefined(prefs) { prefs.MarkCastAt(started); }
         let blackout: Bool = mode == MassOverrideMode.Blackout();
         let i: Int32 = 0;
         while i < ArraySize(targets) {
@@ -195,6 +228,8 @@ public class CapriMassOverride extends IScriptable {
             FTLog("[MassOverride] mode=" + (blackout ? "blackout" : "blink")
                 + " modeSource=" + CapriMassOverride.ModeSource()
                 + " pin=" + CapriMassOverride.PinLabel()
+                + " cost=" + ToString(RoundF(cost))
+                + " ram=" + ToString(ramBefore)
                 + " area=" + MassOverrideArea.Name(game, player.GetWorldPosition())
                 + " cache=" + (stats.cacheHit ? "hit" : "miss")
                 + " blocks=" + ToString(stats.blocks)

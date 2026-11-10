@@ -77,13 +77,14 @@ One consequence: on a cache hit, people are gathered only around V, because the 
 `FTLog` is this project's log call (Capri uses it throughout), and `EngineTime.ToFloat(GameInstance.GetSimTime(game))` is the clock. Every cast logs one line:
 
 ```
-[MassOverride] mode=blink modeSource=local pin=none area=Watson:12:-3 cache=miss blocks=1 probes=12 parts=931
+[MassOverride] mode=blink modeSource=local pin=none cost=25 ram=38 area=Watson:12:-3 cache=miss blocks=1 probes=12 parts=931
   people=142 devices=812 changed=940 targets=954 cap=1000 secs=0.000
 ```
 
 What each field means when you are chasing the 100 / 500 / 1000 target numbers:
 
 - `mode` — the mode this cast ran, `blink` or `blackout`. `modeSource` says who picked it: `server` when a broadcast supplied it, `local` when the pin, the cursor or the clock did. `pin` says whether a pin is in force (`none` while casts alternate), so `mode=blink pin=none` is an alternating cast and `mode=blink pin=blink` one a pin chose — the pair is what tells the two apart in a session log.
+- `cost` / `ram` — what the cast charged out of the RAM pool and the pool value read just before the charge. The deduction is a stat-pool request, so `ram` is the pre-charge figure and the next cast's value shows what the last one took. `cost=0` means Capri is set not to use RAM, so the cast is free rather than quietly charging anyway.
 - `probes` — targeting queries issued. 1 on a cache hit, up to `MaxProbes` (64) on a miss. This is the number that decides whether the fill is affordable.
 - `parts` — target parts those queries returned, i.e. everything the targeting system looked at before filtering.
 - `devices` / `people` — what survived the filter and became targets.
