@@ -35,12 +35,26 @@ public class CapriMassOverride extends IScriptable {
     // `settings.unleashed` is her quickhack tier (Capri.Storage.reds: "her quickhacks
     // at their strongest tier"), and mapping a visual mode onto it made blackout
     // unreachable for anyone who had that turned off.
-    public static func Mode() -> Int32 {
+    public static func Mode(game: GameInstance) -> Int32 {
         let prefs: ref<MassOverridePrefs> = MassOverridePrefs.Get();
         if IsDefined(prefs) { return prefs.Mode(); }
-        // Same as the pinned default: if the service is missing, a cast still does
-        // what it ships as, rather than silently falling back to blink.
-        return MassOverrideMode.Blackout();
+        return CapriMassOverride.ModeFromClock(game);
+    }
+
+    // Fallback when no service is registered to hold the cursor: whole seconds of sim
+    // time decide, so an even second is blackout (the same first turn the cursor
+    // takes) and an odd one is blink. Both modes stay reachable with nothing
+    // registered and nothing to edit; two casts inside the same second repeat the
+    // mode, so waiting a second flips it. Uses division and subtraction rather than
+    // a modulo, which needs nothing beyond Int32 arithmetic.
+    public static func ModeFromClock(game: GameInstance) -> Int32 {
+        let now: Float = EngineTime.ToFloat(GameInstance.GetSimTime(game));
+        let seconds: Int32 = Cast<Int32>(now);
+        let half: Int32 = seconds / 2;
+        if seconds - half * 2 == 0 {
+            return MassOverrideMode.Blackout();
+        }
+        return MassOverrideMode.Blink();
     }
 
     // Fix a mode for every following cast, or pass -1 to alternate again. Both are
@@ -58,7 +72,7 @@ public class CapriMassOverride extends IScriptable {
 
     // Run from CapriActions.Run. Returns "" when it worked, else why not (for the LLM and log).
     public static func Run(player: ref<PlayerPuppet>, system: ref<CapriSystem>) -> String {
-        return CapriMassOverride.RunWith(player, system, CapriMassOverride.Mode());
+        return CapriMassOverride.RunWith(player, system, CapriMassOverride.Mode(player.GetGame()));
     }
 
     public static func RunWith(player: ref<PlayerPuppet>, system: ref<CapriSystem>, mode: Int32) -> String {

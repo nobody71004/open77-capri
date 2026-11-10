@@ -245,7 +245,7 @@ CapriMassOverride.Auto();                           // alternate again
 
 `RunWith(player, system, mode)` still takes a mode explicitly and bypasses the preference entirely, so a future action-table wiring can pass whatever Capri's request asks for without touching this policy.
 
-If the service is unavailable, `Mode()` falls back to blackout rather than failing a cast — the same choice the first cast makes anyway. The log line reports whichever mode actually ran (`mode=blink` / `mode=blackout`), which is the quickest way to confirm the alternation is working.
+If the service is unavailable, the mode does not collapse to one value: `Mode(game)` falls through to `ModeFromClock(game)`, which returns blackout on an even second of sim time and blink on an odd one. Both modes stay reachable with nothing registered and nothing to edit — the service only turns that into a clean per-cast alternation instead of a clock-driven one. Two casts inside the same second repeat the mode, so waiting a second flips it. This is why `Mode` takes the game instance: the fallback needs sim time. The log line reports whichever mode actually ran (`mode=blink` / `mode=blackout`), which is the quickest way to confirm the alternation is working.
 
 ### The gate mirrors it
 
