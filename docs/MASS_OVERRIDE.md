@@ -36,9 +36,9 @@ If any check fails, the server rejects the request and sends a reason code. The 
 
 ## Cost and cooldown
 
-- Both are per player.
-- Cooldown: 120 s (`CapriMassOverride.Cooldown`, `DEFAULTS.cooldownMs`).
-- Cost: 25 RAM from the memory pool (`CapriMassOverride.ChargeCost`, `DEFAULTS.cost`). Resource and amount are still **TBD**; 25 is a placeholder.
+- Both are per player, and both are enforced by the server gate (`DEFAULTS.cooldownMs`, `DEFAULTS.cost`). The game-side action deliberately keeps no cooldown of its own: that would need a storage field the stock Capri build does not have, and the request is admitted by the server anyway.
+- Cooldown: 120 s (`DEFAULTS.cooldownMs`).
+- Cost: 25 RAM from the memory pool, spent locally by the action (`CapriMassOverride.ChargeCost`) and checked against the server balance. Resource and amount are still **TBD**.
 
 ## Probe sweep (multi-probe)
 
@@ -93,15 +93,16 @@ The district is the player's, not the target's, and that is a hard limit rather 
 
 ## Deploying the scripts
 
-The server compile failed because only `Capri.MassOverride.reds` was synced. It calls three things that live in other files:
+Two files, and nothing else:
 
-| File | Needs |
-| --- | --- |
-| `Capri.System.reds` | `public func MassOverrideShown() -> Bool { return this.m_presence.Shown(); }` |
-| `Capri.Storage.reds` | `public let massOverrideLastAt: Float;` |
-| `Capri.Actions.reds` | `case "mass_override": return CapriMassOverride.Run(player, CapriSystem.Get(player.GetGame()));` |
+- `r6/scripts/Open77/Open77MassOverride.reds`
+- `r6/scripts/CapriPersonalityConstruct/Capri.MassOverride.reds`
 
-Copy all four files from the same build, or run `mass-override/sync-scripts.sh "<path to Cyberpunk 2077>"`, which copies the two owned files and checks the three edits above, failing loudly when one is missing.
+`Capri.Actions.reds` must carry `case "mass_override": return CapriMassOverride.Run(player, CapriSystem.Get(player.GetGame()));`. If Capri reaches the action at all, that line is already there.
+
+No other Capri file needs editing. An earlier version of this action called `CapriSystem.MassOverrideShown()` and read `CapriStorage.massOverrideLastAt`, so it only compiled once matching edits in `Capri.System.reds` and `Capri.Storage.reds` had been synced as well. Twice they had not, and the whole script set failed with `UNRESOLVED_MEMBER`. The action now references no Capri member beyond the stock build, so that class of failure cannot happen again. `CapriMassOverride.Duration`, `ChargeCost` and `Cap` are all local constants.
+
+Run `mass-override/sync-scripts.sh "<path to Cyberpunk 2077>"` to copy both files and check the action case.
 
 ## Phases and gates
 

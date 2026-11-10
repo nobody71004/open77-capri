@@ -3,12 +3,18 @@
 // Sandevistan is reference only; there is no time dilation here.
 // The multi-probe sweep, the area cells and the effects live in
 // Open77MassOverride.reds.
+//
+// This file references nothing outside the stock Capri build on purpose. An
+// earlier version called CapriSystem.MassOverrideShown() and read
+// CapriStorage.massOverrideLastAt, which meant it only compiled once matching
+// edits in Capri.System.reds and Capri.Storage.reds had been synced too; twice
+// they had not, and the whole script set failed to compile. Ownership, "Capri is
+// summoned", cooldown and cost are decided by the server gate
+// (mass-override/gate.js), which is where the request is admitted, so nothing
+// here needs a storage field of its own.
 module Capri
 
 public class CapriMassOverride extends IScriptable {
-
-    // Seconds before Capri can run it again for the same player.
-    public static func Cooldown() -> Float { return 120.0; }
 
     // Battery charge per cast, taken from the RAM pool (placeholder value).
     public static func ChargeCost() -> Float { return 25.0; }
@@ -25,14 +31,6 @@ public class CapriMassOverride extends IScriptable {
         if !IsDefined(player) || !IsDefined(system) {
             return "not ready";
         }
-        if !system.MassOverrideShown() {
-            return "Capri is not out right now: she has to be summoned first";
-        }
-        let now = system.Now();
-        let last = CapriStorage.Get().massOverrideLastAt;
-        if last > 0.0 && now - last < CapriMassOverride.Cooldown() {
-            return "Mass Override is recharging";
-        }
         if CapriActions.Ram(player) < CapriMassOverride.ChargeCost() {
             return "not enough battery charge for Mass Override";
         }
@@ -41,7 +39,6 @@ public class CapriMassOverride extends IScriptable {
         if ArraySize(targets) == 0 {
             return "nothing to change around V";
         }
-        CapriStorage.Get().massOverrideLastAt = now;
         GameInstance.GetStatPoolsSystem(player.GetGame()).RequestChangingStatPoolValue(
             Cast<StatsObjectID>(player.GetEntityID()), gamedataStatPoolType.Memory, -CapriMassOverride.ChargeCost(), player, false, false);
         let i: Int32 = 0;

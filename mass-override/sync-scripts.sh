@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Installs the Mass Override scripts into a Cyberpunk 2077 install and checks the
-# edits they depend on.
+# one line the action depends on.
 #
-# The compile errors on the server came from shipping Capri.MassOverride.reds
-# alone: it calls CapriSystem.MassOverrideShown() and reads
-# CapriStorage.massOverrideLastAt, and both live in files that were not updated.
-# This script copies the two files it owns and refuses to finish quietly when the
-# other three pieces are missing.
+# Earlier versions of Capri.MassOverride.reds called CapriSystem.MassOverrideShown()
+# and read CapriStorage.massOverrideLastAt. Both needed matching edits in
+# Capri.System.reds and Capri.Storage.reds, and when those edits were not synced the
+# whole script set failed to compile. The action now references nothing outside the
+# stock Capri build, so only these two files need copying.
 #
 # Usage: ./sync-scripts.sh "/path/to/Cyberpunk 2077"
 set -euo pipefail
@@ -41,14 +41,14 @@ check() {
   fi
 }
 
-check "$CAPRI/Capri.System.reds"  "func MassOverrideShown"  "public func MassOverrideShown() -> Bool { return this.m_presence.Shown(); }"
-check "$CAPRI/Capri.Storage.reds" "massOverrideLastAt"     "public let massOverrideLastAt: Float;"
-check "$CAPRI/Capri.Actions.reds" 'case "mass_override"'   'case "mass_override": return CapriMassOverride.Run(player, CapriSystem.Get(player.GetGame()));'
+# The dispatch line is the only thing outside these two files, and it is part of
+# Capri's own action switch, not an edit this project makes.
+check "$CAPRI/Capri.Actions.reds" 'case "mass_override"' \
+  'case "mass_override": return CapriMassOverride.Run(player, CapriSystem.Get(player.GetGame()));'
 
 if [ "$status" -ne 0 ]; then
   echo >&2
-  echo "The scripts above are out of date. Mass Override will not compile until" >&2
-  echo "they are updated; see docs/MASS_OVERRIDE.md, \"Deploying the scripts\"." >&2
+  echo "Capri has no mass_override action to reach. See docs/MASS_OVERRIDE.md." >&2
   exit 1
 fi
 
