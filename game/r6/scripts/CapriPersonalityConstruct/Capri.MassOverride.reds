@@ -28,15 +28,18 @@ public class CapriMassOverride extends IScriptable {
     public static func Instrumented() -> Bool { return true; }
 
     // The mode for the next cast, taken from Mass Override's own state
-    // (MassOverridePrefs): unpinned alternates blink and blackout cast by cast, and
-    // Pin() fixes one. This is deliberately NOT read from Capri's settings --
+    // (MassOverridePrefs): blackout is pinned by default, Auto() alternates blink and
+    // blackout cast by cast, and Pin() fixes one. This is deliberately NOT read from
+    // Capri's settings --
     // `settings.unleashed` is her quickhack tier (Capri.Storage.reds: "her quickhacks
     // at their strongest tier"), and mapping a visual mode onto it made blackout
     // unreachable for anyone who had that turned off.
     public static func Mode() -> Int32 {
         let prefs: ref<MassOverridePrefs> = MassOverridePrefs.Get();
         if IsDefined(prefs) { return prefs.Mode(); }
-        return MassOverrideMode.Blink();
+        // Same as the pinned default: if the service is missing, a cast still does
+        // what it ships as, rather than silently falling back to blink.
+        return MassOverrideMode.Blackout();
     }
 
     // Fix a mode for every following cast, or pass -1 to alternate again. Both are

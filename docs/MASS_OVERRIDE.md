@@ -217,7 +217,7 @@ The choice lives in Mass Override's own state (`MassOverridePrefs`, a scriptable
 - Capri's settings are her *quickhack tier*, not a visual mode — mapping blackout onto `unleashed` was the bug that made blackout unreachable.
 - Her action table (`CapriActions.Run(player, action, out hits)`) does not dispatch to Mass Override at all yet, and adding an action there means editing a Capri file, which is exactly the kind of cross-file reference that broke the whole script set twice.
 
-So the default is **alternate one cast at a time**: the first cast blinks, the next holds the block dark, then blink again. Blackout is reachable with nothing to press and nothing to edit. The preference is kept in the service, so it survives across casts within a session:
+So the default is **blackout, pinned**, so it can be tested exactly as it ships with nothing to press and nothing to edit. The preference is kept in the service, so it survives across casts within a session:
 
 ```redscript
 CapriMassOverride.Pin(MassOverrideMode.Blackout()); // every cast from now on
