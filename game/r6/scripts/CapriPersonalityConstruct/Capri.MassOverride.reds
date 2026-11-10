@@ -24,6 +24,9 @@ public class CapriMassOverride extends IScriptable {
     // How long people stay hostile and the block stays lit or dark before it reverts.
     public static func Duration() -> Float { return 30.0; }
 
+    // 1 logs one measurement line per cast. Set it false to silence the log.
+    public static func Instrumented() -> Bool { return true; }
+
     // Blink is the default: the block strobes, which reads as an overload rather
     // than a power cut. Capri's own `unleashed` setting is the switch that already
     // exists in her build, so blackout is selectable today without a new storage
@@ -53,40 +56,61 @@ public class CapriMassOverride extends IScriptable {
         if CapriActions.Ram(player) < CapriMassOverride.ChargeCost() {
             return "not enough battery charge for Mass Override";
         }
+        let game: GameInstance = player.GetGame();
+        let started: Float = EngineTime.ToFloat(GameInstance.GetSimTime(game));
+        let stats: ref<MassOverrideStats> = new MassOverrideStats();
         // Probes chain outward from V, so this reaches past 40 m and around corners.
-        let targets = MassOverrideProbe.Collect(player, CapriMassOverride.Cap());
+        let targets = MassOverrideProbe.Collect(player, CapriMassOverride.Cap(), stats);
         if ArraySize(targets) == 0 {
             return "nothing to change around V";
         }
-        GameInstance.GetStatPoolsSystem(player.GetGame()).RequestChangingStatPoolValue(
+        GameInstance.GetStatPoolsSystem(game).RequestChangingStatPoolValue(
             Cast<StatsObjectID>(player.GetEntityID()), gamedataStatPoolType.Memory, -CapriMassOverride.ChargeCost(), player, false, false);
         let blackout: Bool = mode == MassOverrideMode.Blackout();
         let i: Int32 = 0;
         while i < ArraySize(targets) {
-            let object: ref<GameObject> = GameInstance.FindEntityByID(player.GetGame(), targets[i].entityId) as GameObject;
+            let object: ref<GameObject> = GameInstance.FindEntityByID(game, targets[i].entityId) as GameObject;
             if targets[i].kind == 0 {
                 // People turn on V in both modes.
                 MassOverrideEffects.SetHostile(object as NPCPuppet, player, true);
             } else {
                 // Blink leaves the block lit for the first pulse; blackout drops it now.
-                MassOverrideEffects.Blink(object, !blackout);
+                stats.changed += MassOverrideEffects.Blink(object, !blackout);
             }
             i += 1;
         }
         if !blackout {
             let pulse: ref<MassOverridePulse> = new MassOverridePulse();
-            pulse.game = player.GetGame();
+            pulse.game = game;
             pulse.targets = targets;
             pulse.cyclesLeft = RoundF(CapriMassOverride.Duration() / MassOverridePulse.Interval()) + 1;
             pulse.lit = false;
-            GameInstance.GetDelaySystem(player.GetGame()).DelayCallback(pulse, MassOverridePulse.Interval(), false);
+            GameInstance.GetDelaySystem(game).DelayCallback(pulse, MassOverridePulse.Interval(), false);
         }
         // Revert on a delay, not on Capri: dismissing her does not end it early.
         let revert: ref<MassOverrideRevert> = new MassOverrideRevert();
-        revert.game = player.GetGame();
+        revert.game = game;
         revert.player = player;
         revert.targets = targets;
-        GameInstance.GetDelaySystem(player.GetGame()).DelayCallback(revert, CapriMassOverride.Duration(), false);
+        GameInstance.GetDelaySystem(game).DelayCallback(revert, CapriMassOverride.Duration(), false);
+        stats.seconds = EngineTime.ToFloat(GameInstance.GetSimTime(game)) - started;
+        if CapriMassOverride.Instrumented() {
+            // One grep-able line per cast. At 100, 500 and 1000 targets the counts
+            // are the measurement; `secs` is reported too, but a fill happens in a
+            // single frame, so it can honestly read 0.000.
+            FTLog("[MassOverride] mode=" + (blackout ? "blackout" : "blink")
+                + " area=" + MassOverrideArea.Name(game, player.GetWorldPosition())
+                + " cache=" + (stats.cacheHit ? "hit" : "miss")
+                + " blocks=" + ToString(stats.blocks)
+                + " probes=" + ToString(stats.probes)
+                + " parts=" + ToString(stats.parts)
+                + " people=" + ToString(stats.people)
+                + " devices=" + ToString(stats.devices)
+                + " changed=" + ToString(stats.changed)
+                + " targets=" + ToString(ArraySize(targets))
+                + " cap=" + ToString(CapriMassOverride.Cap())
+                + " secs=" + ToString(stats.seconds));
+        }
         return "";
     }
 }

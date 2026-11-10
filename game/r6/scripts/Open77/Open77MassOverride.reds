@@ -46,6 +46,20 @@ public class MassOverrideMode {
   public static func Blackout() -> Int32 { return 1; }
 }
 
+// What one cast actually did, for the log. The counters are the measurement: a
+// fill runs inside one frame, so sim time generally does not advance within it and
+// `seconds` is the whole cast measured outside, which can honestly read 0.
+public class MassOverrideStats {
+  public let probes: Int32;   // targeting queries actually issued
+  public let parts: Int32;    // target parts returned by those queries
+  public let people: Int32;   // npcs added
+  public let devices: Int32;  // screens, lights and vehicles added
+  public let changed: Int32;  // components actually switched by the first pass
+  public let cacheHit: Bool;  // the block's devices came from the cache
+  public let blocks: Int32;   // areas the cache holds
+  public let seconds: Float;  // wall of the whole cast, as the engine reports it
+}
+
 // The area a target is in. There is no coordinate-to-district lookup on 2.31 --
 // district membership is authored as baked trigger volumes and the engine will
 // only name the district the player is standing in (Open77Districts.reds records
@@ -216,14 +230,18 @@ public class MassOverrideProbe {
 
   // Entry point. A block whose devices are already cached costs one query for the
   // people and nothing else.
-  public static func Collect(player: ref<PlayerPuppet>, cap: Int32) -> array<ref<MassOverrideTarget>> {
+  public static func Collect(player: ref<PlayerPuppet>, cap: Int32, stats: ref<MassOverrideStats>) -> array<ref<MassOverrideTarget>> {
     let game: GameInstance = player.GetGame();
     let position: Vector4 = player.GetWorldPosition();
     let key: String = MassOverrideArea.Name(game, position);
     let cell: String = MassOverrideArea.Cell(position);
     let cache: ref<MassOverrideCache> = MassOverrideCache.Get();
+    if IsDefined(cache) {
+      stats.blocks = cache.AreaCount();
+    }
     if IsDefined(cache) && cache.Known(key) {
-      let out: array<ref<MassOverrideTarget>> = MassOverrideProbe.Fill(player, cap, false);
+      stats.cacheHit = true;
+      let out: array<ref<MassOverrideTarget>> = MassOverrideProbe.Fill(player, cap, false, stats);
       let devices: array<ref<MassOverrideTarget>> = cache.Recall(game, key, cell);
       let i: Int32 = 0;
       while i < ArraySize(devices) && ArraySize(out) < cap {
@@ -234,9 +252,10 @@ public class MassOverrideProbe {
       }
       return out;
     }
-    let probed: array<ref<MassOverrideTarget>> = MassOverrideProbe.Fill(player, cap, true);
+    let probed: array<ref<MassOverrideTarget>> = MassOverrideProbe.Fill(player, cap, true, stats);
     if IsDefined(cache) {
       cache.Remember(key, cell, probed);
+      stats.blocks = cache.AreaCount();
     }
     return probed;
   }
@@ -252,7 +271,7 @@ public class MassOverrideProbe {
 
   // The fill. With includeDevices false it is a single probe from V for people,
   // because devices are what grow the frontier and those are already known.
-  public static func Fill(player: ref<PlayerPuppet>, cap: Int32, includeDevices: Bool) -> array<ref<MassOverrideTarget>> {
+  public static func Fill(player: ref<PlayerPuppet>, cap: Int32, includeDevices: Bool, stats: ref<MassOverrideStats>) -> array<ref<MassOverrideTarget>> {
     let out: array<ref<MassOverrideTarget>>;
     let seen: array<EntityID>;
     let frontier: array<EntityID>;
@@ -263,6 +282,7 @@ public class MassOverrideProbe {
       let anchor: ref<GameObject> = GameInstance.FindEntityByID(player.GetGame(), frontier[next]) as GameObject;
       next += 1;
       probes += 1;
+      stats.probes += 1;
       if IsDefined(anchor) {
         let query: TargetSearchQuery;
         query.testedSet = TargetingSet.Complete;
@@ -276,6 +296,7 @@ public class MassOverrideProbe {
         query.ignoreInstigator = true;
         let parts: array<TS_TargetPartInfo>;
         GameInstance.GetTargetingSystem(anchor.GetGame()).GetTargetParts(anchor, query, parts);
+        stats.parts += ArraySize(parts);
         let i: Int32 = 0;
         while i < ArraySize(parts) && ArraySize(out) < cap {
           let comp: wref<TargetingComponent> = TS_TargetPartInfo.GetComponent(parts[i]);
@@ -291,6 +312,7 @@ public class MassOverrideProbe {
                   person.kind = 0;
                   person.label = NameToString(npc.GetClassName());
                   person.area = MassOverrideArea.Cell(npc.GetWorldPosition());
+                  stats.people += 1;
                   ArrayPush(out, person);
                 }
               } else if includeDevices {
@@ -303,6 +325,7 @@ public class MassOverrideProbe {
                   screen.kind = 1;
                   screen.label = NameToString(device.GetClassName());
                   screen.area = MassOverrideArea.Cell(device.GetWorldPosition());
+                  stats.devices += 1;
                   ArrayPush(out, screen);
                   // The next probe: this is what makes the fill follow the street.
                   if ArraySize(frontier) < MassOverrideProbe.MaxProbes() {

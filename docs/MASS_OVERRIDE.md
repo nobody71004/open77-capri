@@ -72,6 +72,27 @@ A fill is up to 64 targeting queries, so its result is remembered per area (`Mas
 
 One consequence: on a cache hit, people are gathered only around V, because the devices that would have carried the fill further down the street are not probed again. In a known block the second flood turns fewer distant people than the first.
 
+## Instrumentation
+
+`FTLog` is this project's log call (Capri uses it throughout), and `EngineTime.ToFloat(GameInstance.GetSimTime(game))` is the clock. Every cast logs one line:
+
+```
+[MassOverride] mode=blink area=Watson:12:-3 cache=miss blocks=1 probes=12 parts=931
+  people=142 devices=812 changed=940 targets=954 cap=1000 secs=0.000
+```
+
+What each field means when you are chasing the 100 / 500 / 1000 target numbers:
+
+- `probes` — targeting queries issued. 1 on a cache hit, up to `MaxProbes` (64) on a miss. This is the number that decides whether the fill is affordable.
+- `parts` — target parts those queries returned, i.e. everything the targeting system looked at before filtering.
+- `devices` / `people` — what survived the filter and became targets.
+- `changed` — components actually switched by the first pass. Screens have several widgets, so this exceeds `devices`.
+- `targets` — size of the list handed to the effect, i.e. what the cap applied to. `targets` near `cap` means the cap, not the block, is the limit.
+- `cache` / `blocks` — whether the devices came from the area cache and how many areas it holds.
+- `secs` — the cast measured outside the work. A fill runs inside one frame, so sim time usually does not advance within it and this can honestly read `0.000`. Treat the counts as the measurement and this as a sanity check.
+
+To read the three data points, cast in a quiet block (`targets` around 100), a busy one (around 500) and a dense one such as a market street at night (around 1000), and read `probes` against `targets` in each line. `Instrumented()` returns false to silence the line.
+
 ## Target ownership (conflicts)
 
 - A target can be claimed by one Mass Override at a time.
