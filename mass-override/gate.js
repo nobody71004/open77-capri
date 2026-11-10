@@ -9,7 +9,10 @@ const DEFAULTS = {
   cooldownMs: 120_000, // placeholder until the cooldown is decided
   cost: 25, // matches CapriMassOverride.ChargeCost() in the game scripts (RAM pool)
   durationMs: 30_000,
-  mode: "blink", // "blink" (default) or "blackout"; mirrors CapriMassOverride.Mode()
+  // "alternate" (default) hands out one mode per cast, starting with blackout, the
+  // same policy as MassOverridePrefs.Mode() in the game scripts. "blink" or
+  // "blackout" pins that mode, the same as CapriMassOverride.Pin().
+  mode: "alternate",
 };
 
 const REASONS = {
@@ -26,10 +29,28 @@ function createMassOverride(options = {}) {
   const balances = new Map(); // playerId -> resource amount
   const claims = new Map(); // targetId -> { castId, expiresAt }
   const active = new Map(); // castId -> { casterId, targetIds, expiresAt }
+  const modeNext = new Map(); // playerId -> the mode the next cast hands out
   let nextCastId = 1;
 
   function setBalance(playerId, amount) {
     balances.set(playerId, amount);
+  }
+
+  // Mirrors MassOverridePrefs.Mode(): a pinned mode wins, otherwise the cursor hands
+  // out one mode and flips it, so the broadcast names the same mode the game will
+  // run (blackout, blink, blackout...). Per player, because in the game the
+  // preference is each client's own.
+  function pickMode(playerId) {
+    if (cfg.mode === "blink" || cfg.mode === "blackout") return cfg.mode;
+    const mode = modeNext.get(playerId) ?? "blackout";
+    modeNext.set(playerId, mode === "blackout" ? "blink" : "blackout");
+    return mode;
+  }
+
+  // Pin a mode ("blink" / "blackout") or resume alternating ("alternate"),
+  // the counterpart of CapriMassOverride.Pin() and Auto().
+  function setMode(mode) {
+    cfg.mode = mode === "blink" || mode === "blackout" ? mode : "alternate";
   }
 
   // Gate: owner, summoned, cooldown, cost. Checked in that order.
@@ -84,7 +105,7 @@ function createMassOverride(options = {}) {
         casterId: player.id,
         targets,
         areas,
-        mode: cfg.mode,
+        mode: pickMode(player.id),
         expiresAt,
       },
     };
@@ -107,10 +128,11 @@ function createMassOverride(options = {}) {
     cfg,
     REASONS,
     setBalance,
+    setMode,
     check,
     cast,
     expire,
-    _state: { cooldownUntil, balances, claims, active },
+    _state: { cooldownUntil, balances, claims, active, modeNext },
   };
 }
 

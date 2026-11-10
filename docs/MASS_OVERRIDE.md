@@ -114,7 +114,7 @@ Two modes, both kept:
 
 NPCs turn hostile in both modes; the mode only changes what happens to screens and lights.
 
-Which one Capri gets: `CapriMassOverride.Mode()` reads her own stock `settings.unleashed` flag — normal is blink, unleashed is blackout. That flag already exists in her build, so selecting a mode needs no new storage field and no edit to another Capri file. `RunWith(player, system, mode)` is the explicit door for a per-action choice later, without changing `Run`'s signature that `Capri.Actions.reds` calls.
+Which one Capri gets: `CapriMassOverride.Mode()` asks `MassOverridePrefs`, which hands out one mode per cast, starting with blackout and flipping each time; `Pin()` fixes one and `Auto()` resumes alternating. `RunWith(player, system, mode)` is the explicit door for a per-action choice later, without changing `Run`'s signature that `Capri.Actions.reds` calls. The server gate carries the same policy (see "The gate mirrors it" below).
 
 ## Effects and duration
 
@@ -197,7 +197,7 @@ One thing that table does *not* settle: `TSFMV` has no vehicle flag in 2.31 — 
 Two faults, both in the mode plumbing:
 
 1. **It was switched once and then overwritten.** A device's own controller keeps its screen and lights in step with its state, so it switches its component back on within a frame or two. The blink survived that because each pulse re-asserts twice a second; the blackout toggled once at the start and was silently undone, which read as nothing happening. Blackout now uses `MassOverrideHold`, which re-asserts dark every second for the whole duration, and the revert lights it back up after.
-2. **The mode was being decided by an unrelated setting.** `Mode()` mapped `settings.unleashed` onto blackout. That field is Capri's quickhack-tier setting (`Capri.Storage.reds`: "her quickhacks at their strongest tier"), true by default and off for anyone paying per-target RAM — so blackout was unreachable for anyone who had turned it off, and switched on without being asked for anyone who had not. `Mode()` now returns `MassOverrideMode.Blink()` and says to change that one line for blackout; `RunWith(player, system, mode)` remains the explicit door.
+2. **The mode was being decided by an unrelated setting.** `Mode()` mapped `settings.unleashed` onto blackout. That field is Capri's quickhack-tier setting (`Capri.Storage.reds`: "her quickhacks at their strongest tier"), true by default and off for anyone paying per-target RAM — so blackout was unreachable for anyone who had turned it off, and switched on without being asked for anyone who had not. `Mode()` now reads `MassOverridePrefs` instead, which is Mass Override's own state; `RunWith(player, system, mode)` remains the explicit door.
 
 ### How a light is switched now
 
@@ -247,7 +247,15 @@ CapriMassOverride.Auto();                           // alternate again
 
 If the service is unavailable, `Mode()` falls back to blackout rather than failing a cast — the same choice the first cast makes anyway. The log line reports whichever mode actually ran (`mode=blink` / `mode=blackout`), which is the quickest way to confirm the alternation is working.
 
-One inconsistency worth knowing: the Node gate (`mass-override/gate.js`) still carries a single fixed `mode`, so a server-broadcast event and the redscript side can disagree about which mode a cast used. Nothing wires the two together yet; when the server owns the decision, `gate.js` should mirror this preference rather than its own default.
+### The gate mirrors it
+
+`mass-override/gate.js` implements the same policy, so a broadcast names the mode the game will actually run:
+
+- `mode: "alternate"` (default) hands out one mode per cast and flips a cursor, starting with `"blackout"` — the same sequence and the same first value as `MassOverridePrefs`.
+- `mode: "blink"` or `"blackout"` pins that mode, and `setMode()` switches between pinned and `"alternate"`, the counterpart of `Pin()` and `Auto()`.
+- The cursor is per player, because in the game the preference is each client's own service. Two players casting do not consume each other's turn.
+
+Pinning never consumes the cursor, so going back to `"alternate"` resumes from wherever the alternation left off rather than restarting. `gate.test.js` covers the sequence, the per-player cursors and the pin/unpin round trip.
 - Traffic lights: red, yellow and green are light components on the device, selected by `ToggleLightByNameEvent` (trafficLight.script), so the light-component switch covers them.
 - Warning/search lights: `BlindingLight` and `DestructibleMasterLight` are devices whose `TurnOffDevice` ends in their own light toggle; they are reached as entities.
 - Widget component names differ per device (`ui`, `ads`, `tv_ui`, `radio_ui`, `terminalui`), so components are selected by class, not by name.

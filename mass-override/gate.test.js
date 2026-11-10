@@ -83,14 +83,35 @@ test("expire releases claims and returns targets to revert", () => {
   assert.equal(mo._state.claims.size, 0);
 });
 
-test("blink is the default mode and blackout stays selectable", () => {
-  const blink = createMassOverride({ cost: 0, cooldownMs: 0 });
-  blink.setBalance("a", 1);
-  assert.equal(blink.cast(owner("a"), targets(1, "x"), 0).event.mode, "blink");
+test("the mode alternates one cast at a time, starting with blackout", () => {
+  const mo = createMassOverride({ cost: 0, cooldownMs: 0 });
+  mo.setBalance("a", 10);
+  assert.equal(mo.cast(owner("a"), targets(1, "x1"), 0).event.mode, "blackout");
+  assert.equal(mo.cast(owner("a"), targets(1, "x2"), 0).event.mode, "blink");
+  assert.equal(mo.cast(owner("a"), targets(1, "x3"), 0).event.mode, "blackout");
+  assert.equal(mo._state.modeNext.get("a"), "blink", "the cursor is left ready to flip");
+});
 
-  const blackout = createMassOverride({ cost: 0, cooldownMs: 0, mode: "blackout" });
-  blackout.setBalance("a", 1);
-  assert.equal(blackout.cast(owner("a"), targets(1, "y"), 0).event.mode, "blackout");
+test("the alternation cursor is per player", () => {
+  const mo = createMassOverride({ cost: 0, cooldownMs: 0 });
+  mo.setBalance("a", 10);
+  mo.setBalance("b", 10);
+  assert.equal(mo.cast(owner("a"), targets(1, "a1"), 0).event.mode, "blackout");
+  // b's first cast is blackout too: a has not consumed b's turn.
+  assert.equal(mo.cast(owner("b"), targets(1, "b1"), 0).event.mode, "blackout");
+  assert.equal(mo.cast(owner("a"), targets(1, "a2"), 0).event.mode, "blink");
+});
+
+test("a pinned mode holds until auto is set again", () => {
+  const mo = createMassOverride({ cost: 0, cooldownMs: 0, mode: "blackout" });
+  mo.setBalance("a", 10);
+  assert.equal(mo.cast(owner("a"), targets(1, "y1"), 0).event.mode, "blackout");
+  assert.equal(mo.cast(owner("a"), targets(1, "y2"), 0).event.mode, "blackout");
+  mo.setMode("blink");
+  assert.equal(mo.cast(owner("a"), targets(1, "y3"), 0).event.mode, "blink");
+  // Pinning never consumed the cursor, so alternating resumes from blackout.
+  mo.setMode("alternate");
+  assert.equal(mo.cast(owner("a"), targets(1, "y4"), 0).event.mode, "blackout");
 });
 
 test("a cast reports the areas its targets are in", () => {
