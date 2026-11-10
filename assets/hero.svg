@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="420" viewBox="0 0 1200 420" role="img" aria-labelledby="t d">
+  <title id="t">Open77 Capri — Personality Construct</title>
+  <desc id="d">Dark Night City header with a yellow accent, the Open77 Capri integration title and a placeholder for the in-game Capri avatar.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#05070c"/>
+      <stop offset="0.55" stop-color="#0a1320"/>
+      <stop offset="1" stop-color="#14101f"/>
+    </linearGradient>
+    <linearGradient id="glow" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#fcee0a" stop-opacity="0"/>
+      <stop offset="0.5" stop-color="#fcee0a" stop-opacity="0.9"/>
+      <stop offset="1" stop-color="#00f0ff" stop-opacity="0"/>
+    </linearGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#00f0ff" stroke-opacity="0.08"/>
+    </pattern>
+  </defs>
+  <rect width="1200" height="420" fill="url(#bg)"/>
+  <rect width="1200" height="420" fill="url(#grid)"/>
+  <!-- skyline silhouette -->
+  <g fill="#070b13" stroke="#00f0ff" stroke-opacity="0.25">
+    <rect x="760" y="210" width="60" height="210"/>
+    <rect x="830" y="150" width="70" height="270"/>
+    <rect x="910" y="180" width="50" height="240"/>
+    <rect x="970" y="110" width="90" height="310"/>
+    <rect x="1070" y="200" width="60" height="220"/>
+    <rect x="1140" y="160" width="60" height="260"/>
+  </g>
+  <g fill="#fcee0a" fill-opacity="0.7">
+    <rect x="850" y="170" width="6" height="10"/>
+    <rect x="990" y="140" width="6" height="10"/>
+    <rect x="1000" y="190" width="6" height="10"/>
+    <rect x="1088" y="222" width="6" height="10"/>
+  </g>
+  <rect x="0" y="0" width="1200" height="3" fill="#fcee0a"/>
+  <rect x="60" y="338" width="1080" height="2" fill="url(#glow)"/>
+  <!-- title -->
+  <text x="60" y="112" font-family="Impact, 'Arial Black', sans-serif" font-size="18" letter-spacing="6" fill="#fcee0a">OPEN77 MULTIPLAYER</text>
+  <text x="60" y="210" font-family="'Arial Black', Impact, sans-serif" font-style="italic" font-size="84" font-weight="900" fill="#f4f6fb">CAPRI</text>
+  <text x="60" y="284" font-family="'Arial Black', Impact, sans-serif" font-style="italic" font-size="44" font-weight="900" fill="#fcee0a">PERSONALITY CONSTRUCT</text>
+  <text x="60" y="326" font-family="Segoe UI, Arial, sans-serif" font-size="20" fill="#9fb3c8">Native companion, voice and clinic chip for Night City roleplay.</text>
+  <!-- accent frame for the avatar area -->
+  <rect x="790" y="34" width="350" height="260" rx="14" fill="none" stroke="#fcee0a" stroke-width="2" stroke-dasharray="10 8" stroke-opacity="0.7"/>
+</svg>

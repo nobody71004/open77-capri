@@ -4,6 +4,7 @@
 !.env.example
 
 # Third-party mods and generated assets (never commit these)
+assets/capri-avatar.png
 *.zip
 *.archive
 *.dll

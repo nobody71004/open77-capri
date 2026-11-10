@@ -1,6 +1,23 @@
+<p align="center">
+  <img src="assets/hero.svg" alt="Open77 Capri: Personality Construct header" width="100%">
+</p>
+
 # Open77 Capri
 
 Capri: Personality Construct integration for **Open77 multiplayer** servers.
+
+## Contents
+
+- [What is included](#what-is-included)
+- [What is not included](#what-is-not-included)
+- [Requirements](#requirements)
+- [Server quick start](#server-quick-start)
+- [Launcher-delivered client mod](#launcher-delivered-client-mod)
+- [Client setup](#client-setup)
+- [Important behaviour](#important-behaviour)
+- [Verification](#verification)
+- [Troubleshooting and rollback](#troubleshooting-and-rollback)
+- [License](#license)
 
 This repository contains the server-side work we added for Capri plus the exact
 reference scripts used to package Capri alongside Codeware. It is written so
@@ -42,9 +59,9 @@ Third-party files are **not redistributed** here:
 Install those from their official sources and follow their licenses. See
 [NOTICE.md](NOTICE.md).
 
-## Server quick start
+## Requirements
 
-Requirements:
+Server:
 
 - Linux Open77 server, root access, `systemd`.
 - Python **3.10+** (the patcher uses modern type syntax).
@@ -53,6 +70,14 @@ Requirements:
   `resources/opx_infinity/modules/ripperdoc/module.lua` and
   `resources/opx_infinity/modules/ripperdoc/locales.lua`.
 - A backed-up server and a maintenance window.
+
+Client (for players who use the companion):
+
+- Cyberpunk 2077 with Codeware, ArchiveXL and Red4ext installed by the launcher
+  or from their official sources.
+- Open77 Launcher, if you want Capri delivered automatically on connect.
+
+## Server quick start
 
 ```bash
 cp .env.example .env
@@ -78,6 +103,28 @@ Do not expose an unsecured Open77 server to the public internet.
 For staging, use the staging root and staging service. Test staging first, then
 repeat against production. Full instructions:
 [docs/SERVER_INSTALL.md](docs/SERVER_INSTALL.md).
+
+## Launcher-delivered client mod
+
+The packager turns a Capri build into a launcher package and the publisher
+registers it as a server `requiredMods` entry. Players then receive it when they
+connect. Build, publish, and check the manifest as described in
+[docs/LAUNCHER_MOD.md](docs/LAUNCHER_MOD.md). In short:
+
+```bash
+python scripts/build_capri_launcher_mod.py --capri-zip <capri.zip> \
+       --version <x.y.z> --out-dir <dist-dir>
+```
+
+Build outputs, zips and checksums are generated locally and must not be
+committed.
+
+## Client setup
+
+Follow [docs/CLIENT_SETUP.md](docs/CLIENT_SETUP.md) for the manual install path.
+It covers the package layout, the in-game keys (F7 / CapsLock / Enter by
+default), and the optional CET and voice tooling. The launcher package does not
+ship any CET UI.
 
 ## Capri package split
 

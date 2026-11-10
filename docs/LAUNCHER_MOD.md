@@ -51,7 +51,7 @@ matches the Open77 split (see [PACKAGE_SPLIT.md](PACKAGE_SPLIT.md)):
 python scripts/build_capri_launcher_mod.py \
   --capri-zip "$HOME/Downloads/CapriPersonalityConstruct-1.16.zip" \
   --codeware-scripts "/path/to/Cyberpunk 2077/r6/scripts/CapriPersonalityConstruct/Codeware" \
-  --version 1.16.2 \
+  --version 1.16.3 \
   --out-dir dist
 ```
 
@@ -61,7 +61,7 @@ On Windows:
 python scripts\build_capri_launcher_mod.py `
   --capri-zip "$env:USERPROFILE\Downloads\CapriPersonalityConstruct 1.16.zip" `
   --codeware-scripts "C:\Program Files (x86)\Steam\steamapps\common\Cyberpunk 2077\r6\scripts\CapriPersonalityConstruct\Codeware" `
-  --version 1.16.2 --out-dir dist
+  --version 1.16.3 --out-dir dist
 ```
 
 The builder:
@@ -73,7 +73,7 @@ The builder:
 - writes a reproducible zip (fixed timestamps) plus `<sha256>.json`;
 - prints the exact `requiredMods` entry for the server.
 
-Expected result for Capri 1.16.2: **44 files**, the three required roots plus
+Expected result for Capri 1.16.3: **45 files**, the three required roots plus
 `r6/scripts`, only the no-UI `CapriVozReady` CET backend, and a SHA-256 that is
 stable across machines. The builder removes every player-facing CET mod,
 including `CapriPersonalityConstruct/init.lua` (the F1 chat/settings window).
@@ -84,8 +84,8 @@ The package must contain no CET UI at all.
 Copy the zip to the server, then run as root:
 
 ```bash
-sudo bash scripts/publish_capri_launcher_mod.sh staging \
-     --zip dist/CapriPersonalityConstruct-1.16.2.zip --version 1.16.2
+sudo bash scripts/publish_capri_launcher_mod.sh staging \--zip dist/CapriPersonalityConstruct-1.16.3.zip --version 1.16.3
+  
 ```
 
 The publisher:
@@ -115,8 +115,8 @@ Test staging first, with a launcher client:
 Only then publish production:
 
 ```bash
-sudo bash scripts/publish_capri_launcher_mod.sh production \
-     --zip dist/CapriPersonalityConstruct-1.16.2.zip --version 1.16.2
+sudo bash scripts/publish_capri_launcher_mod.sh production \--zip dist/CapriPersonalityConstruct-1.16.3.zip --version 1.16.3
+  
 ```
 
 ## Her voice
