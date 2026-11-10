@@ -89,7 +89,7 @@ test("cooldown, unknown player and expiry all answer over HTTP", async () => {
   }
 });
 
-test("state exposes the mode cursor per player", async () => {
+test("state exposes the shared mode cursor", async () => {
   const srv = await start({ cooldownMs: 0, cost: 0 });
   try {
     await post(srv.base, "/players", { id: "p1", ownsCapri: true, capriSummoned: true, balance: 5 });
@@ -98,8 +98,7 @@ test("state exposes the mode cursor per player", async () => {
     const res = await fetch(`${srv.base}/state`);
     const state = await res.json();
     assert.equal(res.status, 200);
-    assert.equal(state.modeNext.p1, "blink", "p1 has consumed its turn");
-    assert.equal(state.modeNext.p2, undefined, "p2 has not cast yet");
+    assert.equal(state.nextMode, "blink", "the cast advanced the shared cursor");
     assert.equal(state.mode, "alternate", "the default is alternating");
   } finally {
     await srv.close();

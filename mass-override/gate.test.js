@@ -89,17 +89,18 @@ test("the mode alternates one cast at a time, starting with blackout", () => {
   assert.equal(mo.cast(owner("a"), targets(1, "x1"), 0).event.mode, "blackout");
   assert.equal(mo.cast(owner("a"), targets(1, "x2"), 0).event.mode, "blink");
   assert.equal(mo.cast(owner("a"), targets(1, "x3"), 0).event.mode, "blackout");
-  assert.equal(mo._state.modeNext.get("a"), "blink", "the cursor is left ready to flip");
+  assert.equal(mo._state.nextMode, "blink", "the cursor is left ready to flip");
 });
 
-test("the alternation cursor is per player", () => {
+test("one cursor is shared by every player", () => {
   const mo = createMassOverride({ cost: 0, cooldownMs: 0 });
   mo.setBalance("a", 10);
   mo.setBalance("b", 10);
   assert.equal(mo.cast(owner("a"), targets(1, "a1"), 0).event.mode, "blackout");
-  // b's first cast is blackout too: a has not consumed b's turn.
-  assert.equal(mo.cast(owner("b"), targets(1, "b1"), 0).event.mode, "blackout");
-  assert.equal(mo.cast(owner("a"), targets(1, "a2"), 0).event.mode, "blink");
+  // b's cast continues the same sequence rather than starting its own.
+  assert.equal(mo.cast(owner("b"), targets(1, "b1"), 0).event.mode, "blink");
+  assert.equal(mo.cast(owner("a"), targets(1, "a2"), 0).event.mode, "blackout");
+  assert.equal(mo._state.nextMode, "blink", "both players advanced the one cursor");
 });
 
 test("a pinned mode holds until auto is set again", () => {

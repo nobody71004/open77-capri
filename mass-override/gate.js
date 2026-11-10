@@ -29,7 +29,7 @@ function createMassOverride(options = {}) {
   const balances = new Map(); // playerId -> resource amount
   const claims = new Map(); // targetId -> { castId, expiresAt }
   const active = new Map(); // castId -> { casterId, targetIds, expiresAt }
-  const modeNext = new Map(); // playerId -> the mode the next cast hands out
+  let nextMode = "blackout"; // the mode the next cast hands out, shared by every player
   let nextCastId = 1;
 
   function setBalance(playerId, amount) {
@@ -38,12 +38,13 @@ function createMassOverride(options = {}) {
 
   // Mirrors MassOverridePrefs.Mode(): a pinned mode wins, otherwise the cursor hands
   // out one mode and flips it, so the broadcast names the same mode the game will
-  // run (blackout, blink, blackout...). Per player, because in the game the
-  // preference is each client's own.
-  function pickMode(playerId) {
+  // run (blackout, blink, blackout...). One cursor for the whole session: a cast by
+  // any player advances it, so the server and every client stay on the same beat
+  // instead of each player alternating privately.
+  function pickMode() {
     if (cfg.mode === "blink" || cfg.mode === "blackout") return cfg.mode;
-    const mode = modeNext.get(playerId) ?? "blackout";
-    modeNext.set(playerId, mode === "blackout" ? "blink" : "blackout");
+    const mode = nextMode;
+    nextMode = mode === "blackout" ? "blink" : "blackout";
     return mode;
   }
 
@@ -105,7 +106,7 @@ function createMassOverride(options = {}) {
         casterId: player.id,
         targets,
         areas,
-        mode: pickMode(player.id),
+        mode: pickMode(),
         expiresAt,
       },
     };
@@ -132,7 +133,17 @@ function createMassOverride(options = {}) {
     check,
     cast,
     expire,
-    _state: { cooldownUntil, balances, claims, active, modeNext },
+    // A getter, not a copied field: the cursor is a primitive that changes on every
+    // cast, so a plain property would keep reporting the value it had at creation.
+    _state: {
+      cooldownUntil,
+      balances,
+      claims,
+      active,
+      get nextMode() {
+        return nextMode;
+      },
+    },
   };
 }
 

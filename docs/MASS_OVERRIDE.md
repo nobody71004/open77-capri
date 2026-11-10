@@ -255,7 +255,7 @@ If the service is unavailable, the mode does not collapse to one value: `Mode(ga
 
 - `mode: "alternate"` (default) hands out one mode per cast and flips a cursor, starting with `"blackout"` — the same sequence and the same first value as `MassOverridePrefs`.
 - `mode: "blink"` or `"blackout"` pins that mode, and `setMode()` switches between pinned and `"alternate"`, the counterpart of `Pin()` and `Auto()`.
-- The cursor is per player, because in the game the preference is each client's own service. Two players casting do not consume each other's turn.
+- The cursor is shared by the whole session: any player's cast advances it, so the server and every client stay on the same beat. A private per-player cursor would let two players in the same street run opposite modes.
 - The dev server exposes the same switch as `POST /mode` with `{ "mode": "blink" | "blackout" | "alternate" }`, so a pin can be flipped without restarting it; anything else is refused with 400 and `GET /state` reports the mode currently in force.
 
 Pinning never consumes the cursor, so going back to `"alternate"` resumes from wherever the alternation left off rather than restarting. `gate.test.js` covers the sequence, the per-player cursors and the pin/unpin round trip.
