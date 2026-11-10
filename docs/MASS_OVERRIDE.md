@@ -256,6 +256,7 @@ If the service is unavailable, the mode does not collapse to one value: `Mode(ga
 - `mode: "alternate"` (default) hands out one mode per cast and flips a cursor, starting with `"blackout"` — the same sequence and the same first value as `MassOverridePrefs`.
 - `mode: "blink"` or `"blackout"` pins that mode, and `setMode()` switches between pinned and `"alternate"`, the counterpart of `Pin()` and `Auto()`.
 - The cursor is per player, because in the game the preference is each client's own service. Two players casting do not consume each other's turn.
+- The dev server exposes the same switch as `POST /mode` with `{ "mode": "blink" | "blackout" | "alternate" }`, so a pin can be flipped without restarting it; anything else is refused with 400 and `GET /state` reports the mode currently in force.
 
 Pinning never consumes the cursor, so going back to `"alternate"` resumes from wherever the alternation left off rather than restarting. `gate.test.js` covers the sequence, the per-player cursors and the pin/unpin round trip.
 - Traffic lights: red, yellow and green are light components on the device, selected by `ToggleLightByNameEvent` (trafficLight.script), so the light-component switch covers them.
@@ -274,7 +275,7 @@ Still unverified:
 
 ## Verification status
 
-- Node tests: `node --test mass-override/gate.test.js mass-override/engine-adapter.test.js mass-override/dev-server.test.js mass-override/reds-lint.test.js` — 28/28 pass (gate, engine layer, the local server driven over HTTP, and the static script checker).
+- Node tests: `node --test mass-override/gate.test.js mass-override/engine-adapter.test.js mass-override/dev-server.test.js mass-override/reds-lint.test.js` — 30/30 pass (gate, engine layer, the local server driven over HTTP, and the static script checker).
 - Live server: a funded cast returned 200 with mode `blackout` and three targets, charged 25 of 100, then `on_cooldown`, `not_summoned` and `not_owner` each refused with 409 and no effects; a 400 ms cast expired and handed back its two claims for revert. This is the local shim, not the game: nobody in a session is being charged yet.
 - Game scripts: the last redscript build (2026-11-10 13:57Z) ended `Completed with 521 warnings and 0 errors` and included both Mass Override files. That build predates the current copies, so the current revision has NOT been compiled: `scc.exe` accepts only `.script`, and redscript runs only when the game starts. `reds-lint.js` — unbalanced braces, call arity, unknown methods, and symbols declared in either file — is clean on the current copies, which are byte-identical to the installed ones.
 - Not run in-game. Coverage, visuals and frame cost are unconfirmed.

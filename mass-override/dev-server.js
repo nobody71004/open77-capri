@@ -4,7 +4,8 @@
 //   POST /players           { id, ownsCapri, capriSummoned, balance }
 //   POST /cast              { playerId, candidates: [{ id, type }] }
 //   POST /expire            { castId }  (uses the server clock, or `now` for tests)
-//   GET  /state             current cooldowns and claims (debug)
+//   POST /mode              { mode: "blink" | "blackout" | "alternate" }
+//   GET  /state             current cooldowns, claims and mode (debug)
 
 const http = require("node:http");
 const { createMassOverride } = require("./gate");
@@ -58,6 +59,17 @@ function createDevServer(options = {}) {
         const result = mo.expire(castId, now());
         return result ? send(res, 200, result) : send(res, 404, { error: "not_expired_or_unknown" });
       }
+      if (req.method === "POST" && req.url === "/mode") {
+        const { mode } = await readBody(req);
+        if (mode !== "blink" && mode !== "blackout" && mode !== "alternate") {
+          return send(res, 400, {
+            error: "mode must be blink, blackout or alternate",
+            mode: mo.cfg.mode,
+          });
+        }
+        mo.setMode(mode);
+        return send(res, 200, { ok: true, mode: mo.cfg.mode });
+      }
       if (req.method === "GET" && req.url === "/state") {
         const s = mo._state;
         return send(res, 200, {
@@ -66,6 +78,7 @@ function createDevServer(options = {}) {
           claims: Object.fromEntries(s.claims),
           active: Object.fromEntries(s.active),
           modeNext: Object.fromEntries(s.modeNext),
+          mode: mo.cfg.mode,
         });
       }
       send(res, 404, { error: "not_found" });

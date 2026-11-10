@@ -100,6 +100,49 @@ test("state exposes the mode cursor per player", async () => {
     assert.equal(res.status, 200);
     assert.equal(state.modeNext.p1, "blink", "p1 has consumed its turn");
     assert.equal(state.modeNext.p2, undefined, "p2 has not cast yet");
+    assert.equal(state.mode, "alternate", "the default is alternating");
+  } finally {
+    await srv.close();
+  }
+});
+
+test("a mode can be pinned over HTTP without restarting the server", async () => {
+  const srv = await start({ cooldownMs: 0, cost: 0 });
+  try {
+    await post(srv.base, "/players", { id: "p1", ownsCapri: true, capriSummoned: true, balance: 5 });
+
+    const blink = await post(srv.base, "/mode", { mode: "blink" });
+    assert.equal(blink.status, 200);
+    assert.equal(blink.body.mode, "blink");
+    const a = await post(srv.base, "/cast", { playerId: "p1", candidates: candidates(1, "a") });
+    const b = await post(srv.base, "/cast", { playerId: "p1", candidates: candidates(1, "b") });
+    assert.equal(a.body.event.mode, "blink", "the pin overrides the first blackout");
+    assert.equal(b.body.event.mode, "blink", "a pinned mode holds across casts");
+
+    const blackout = await post(srv.base, "/mode", { mode: "blackout" });
+    assert.equal(blackout.body.mode, "blackout");
+    const c = await post(srv.base, "/cast", { playerId: "p1", candidates: candidates(1, "c") });
+    assert.equal(c.body.event.mode, "blackout", "the pin can be switched in place");
+
+    const auto = await post(srv.base, "/mode", { mode: "alternate" });
+    assert.equal(auto.body.mode, "alternate", "alternating comes back without a restart");
+    const state = await (await fetch(`${srv.base}/state`)).json();
+    assert.equal(state.mode, "alternate");
+  } finally {
+    await srv.close();
+  }
+});
+
+test("an unknown mode is refused and changes nothing", async () => {
+  const srv = await start({});
+  try {
+    const bad = await post(srv.base, "/mode", { mode: "strobe" });
+    assert.equal(bad.status, 400);
+    assert.match(bad.body.error, /blink, blackout or alternate/);
+    const empty = await post(srv.base, "/mode", {});
+    assert.equal(empty.status, 400, "a missing mode is refused too");
+    const state = await (await fetch(`${srv.base}/state`)).json();
+    assert.equal(state.mode, "alternate", "the mode is unchanged");
   } finally {
     await srv.close();
   }
