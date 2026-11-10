@@ -158,7 +158,7 @@ public class CapriMassOverride extends IScriptable {
         // The recharge is part of the cast, not a courtesy: a session can pay RAM for
         // one cast per cooldown, the same as the gate charges.
         let prefs: ref<MassOverridePrefs> = MassOverridePrefs.Get();
-        if IsDefined(prefs) && prefs.LastCastAt() >= 0.0 {
+        if IsDefined(prefs) && prefs.Casts() > 0 {
             let waited: Float = started - prefs.LastCastAt();
             if waited < CapriMassOverride.Cooldown() {
                 let left: Int32 = RoundF(CapriMassOverride.Cooldown() - waited);

@@ -113,7 +113,8 @@ public class MassOverridePrefs extends ScriptableService {
   private let m_pinned: Int32 = -1; // -1 = alternate, 0 = blink, 1 = blackout
   private let m_next: Int32 = 1;    // what the next unpinned cast uses (1 = blackout)
   private let m_serverMode: Int32 = -1; // mode a server broadcast named, waiting for its cast
-  private let m_lastCastAt: Float = -1.0; // sim time of the last charged cast, -1 = never
+  private let m_lastCastAt: Float = 0.0; // sim time of the last charged cast
+  private let m_casts: Int32;           // casts charged so far; 0 means none yet
   private let m_lastFromServer: Bool;   // the last Mode() came from a broadcast, not the cursor
   private let m_warnedMissing: Bool; // the one-time "service missing" line was printed
 
@@ -169,8 +170,16 @@ public class MassOverridePrefs extends ScriptableService {
   // The cooldown lives here rather than in a static because redscript has no static
   // fields, and here rather than in Capri's storage because it belongs to Mass
   // Override: the same service the gate's per-player clock mirrors.
+  //
+  // "Never cast" is a count of zero, not a -1 timestamp: a field initialiser must be a
+  // constant, and redscript folds `-1` for Int32 but not `-1.0`, so a Float sentinel
+  // fails to compile with INVALID_CONSTANT.
   public func LastCastAt() -> Float { return this.m_lastCastAt; }
-  public func MarkCastAt(now: Float) -> Void { this.m_lastCastAt = now; }
+  public func Casts() -> Int32 { return this.m_casts; }
+  public func MarkCastAt(now: Float) -> Void {
+    this.m_lastCastAt = now;
+    this.m_casts = this.m_casts + 1;
+  }
 
   public func Pin(mode: Int32) -> Void { this.m_pinned = mode; }
 
