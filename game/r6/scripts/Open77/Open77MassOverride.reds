@@ -60,6 +60,11 @@ public class MassOverrideTarget {
   public let kind: Int32;   // 0 = person, 1 = screen, 2 = light, 3 = vehicle
   public let label: String; // class name, for the log
   public let area: String;  // 50 m cell the target stands in
+  // What each part was doing before the cast touched it, so the revert puts it
+  // back rather than switching the whole street on. A newsstand screen that was
+  // already dark, or a lamp that was already off, stays that way.
+  public let screenWasOn: Bool;
+  public let lightWasOn: Bool;
 }
 
 // Kept as Int32 constants rather than an enum so the mode can be passed through a
@@ -332,6 +337,10 @@ public class MassOverrideCache extends ScriptableService {
             target.kind = cached.kind;
             target.label = cached.label;
             target.area = cached.cell;
+            // Cached entries store the device, not its state: the state is read now,
+            // when the entry is turned back into a target and before any switching.
+            target.screenWasOn = MassOverrideEffects.ScreenOn(object);
+            target.lightWasOn = MassOverrideEffects.LightOn(object);
             ArrayPush(out, target);
             ArrayPush(kept, cached);
           }
@@ -456,6 +465,10 @@ public class MassOverrideProbe {
                   let screen: ref<MassOverrideTarget> = new MassOverrideTarget();
                   screen.entityId = device.GetEntityID();
                   screen.kind = MassOverrideEffects.KindOf(device);
+                  // Read before anything is switched: Collect runs before the apply
+                  // pass, so this is the pre-cast state.
+                  screen.screenWasOn = MassOverrideEffects.ScreenOn(device);
+                  screen.lightWasOn = MassOverrideEffects.LightOn(device);
                   screen.label = NameToString(device.GetClassName());
                   screen.area = MassOverrideArea.Cell(device.GetWorldPosition());
                   stats.devices += 1;
@@ -522,6 +535,12 @@ public class MassOverrideEffects {
 
   // The same switch, reporting which path changed what.
   public static func BlinkReported(target: ref<GameObject>, on: Bool, stats: ref<MassOverrideStats>) -> Int32 {
+    return MassOverrideEffects.Switch(target, on, on, stats);
+  }
+
+  // Both parts independently, which is what a revert needs: screens and lights each
+  // go back to what they were, and either may be restored without the other.
+  public static func Switch(target: ref<GameObject>, screenOn: Bool, lightOn: Bool, stats: ref<MassOverrideStats>) -> Int32 {
     if !IsDefined(target) { return 0; }
     let changed: Int32 = 0;
     let hasLight: Bool = false;
@@ -530,15 +549,15 @@ public class MassOverrideEffects {
     while i < ArraySize(components) {
       let widget: ref<IWorldWidgetComponent> = components[i] as IWorldWidgetComponent;
       if IsDefined(widget) {
-        if widget.IsEnabled() != on {
-          widget.Toggle(on);
+        if widget.IsEnabled() != screenOn {
+          widget.Toggle(screenOn);
           changed += 1;
         }
       } else {
         let light: ref<gameLightComponent> = components[i] as gameLightComponent;
         if IsDefined(light) {
           hasLight = true;
-          let path: Int32 = MassOverrideEffects.SetLight(light, on);
+          let path: Int32 = MassOverrideEffects.SetLight(light, lightOn);
           if path != MassOverrideLightSwitch.None() {
             changed += 1;
           }
@@ -557,7 +576,7 @@ public class MassOverrideEffects {
     // a mesh or a child rather than on a component of their own follow too.
     if hasLight {
       let evt: ref<ToggleLightEvent> = new ToggleLightEvent();
-      evt.toggle = on;
+      evt.toggle = lightOn;
       evt.loop = false;
       target.QueueEvent(evt);
       stats.lightEvents += 1;
@@ -606,6 +625,19 @@ public class MassOverrideEffects {
     }
   }
 
+  // Every target back to the state it was found in.
+  public static func RestoreAll(game: GameInstance, targets: array<ref<MassOverrideTarget>>) -> Void {
+    let sink: ref<MassOverrideStats> = new MassOverrideStats();
+    let i: Int32 = 0;
+    while i < ArraySize(targets) {
+      if targets[i].kind != 0 {
+        let object: ref<GameObject> = GameInstance.FindEntityByID(game, targets[i].entityId) as GameObject;
+        MassOverrideEffects.Switch(object, targets[i].screenWasOn, targets[i].lightWasOn, sink);
+      }
+      i += 1;
+    }
+  }
+
   // A screen is any world widget component. A light is a gameLightComponent,
   // which is what ElectricLight requests for a street light, a lamp or a traffic
   // light; vehicleLightComponent derives from it, so headlights match too.
@@ -636,6 +668,32 @@ public class MassOverrideEffects {
       if IsDefined(components[i]) && IsDefined(components[i] as IWorldWidgetComponent) {
         return true;
       }
+      i += 1;
+    }
+    return false;
+  }
+
+  // Whether anything of that kind is currently on. Used to snapshot the state a
+  // revert has to put back.
+  public static func ScreenOn(target: ref<GameObject>) -> Bool {
+    if !IsDefined(target) { return false; }
+    let components: array<ref<IComponent>> = target.GetComponents();
+    let i: Int32 = 0;
+    while i < ArraySize(components) {
+      let widget: ref<IWorldWidgetComponent> = components[i] as IWorldWidgetComponent;
+      if IsDefined(widget) && widget.IsEnabled() { return true; }
+      i += 1;
+    }
+    return false;
+  }
+
+  public static func LightOn(target: ref<GameObject>) -> Bool {
+    if !IsDefined(target) { return false; }
+    let components: array<ref<IComponent>> = target.GetComponents();
+    let i: Int32 = 0;
+    while i < ArraySize(components) {
+      let light: ref<gameLightComponent> = components[i] as gameLightComponent;
+      if IsDefined(light) && light.IsOn() { return true; }
       i += 1;
     }
     return false;
@@ -676,8 +734,9 @@ public class MassOverridePulse extends DelayCallback {
       next.lit = !this.lit;
       GameInstance.GetDelaySystem(this.game).DelayCallback(next, MassOverridePulse.Interval(), false);
     } else {
-      // Whatever the last pulse did, end lit rather than dark.
-      MassOverrideEffects.SetAll(this.game, this.targets, true);
+      // Whatever the last pulse did, end where the block started, not lit: a screen
+      // that was off before the cast stays off.
+      MassOverrideEffects.RestoreAll(this.game, this.targets);
     }
   }
 }
@@ -718,6 +777,7 @@ public class MassOverrideRevert extends DelayCallback {
 
   public func Call() -> Void {
     let player: ref<PlayerPuppet> = this.player;
+    let sink: ref<MassOverrideStats> = new MassOverrideStats();
     let i: Int32 = 0;
     while i < ArraySize(this.targets) {
       let target: ref<MassOverrideTarget> = this.targets[i];
@@ -725,7 +785,8 @@ public class MassOverrideRevert extends DelayCallback {
       if target.kind == 0 {
         MassOverrideEffects.SetHostile(object as NPCPuppet, player, false);
       } else {
-        MassOverrideEffects.Blink(object, true);
+        // Each part back to the state it had before the cast, rather than on.
+        MassOverrideEffects.Switch(object, target.screenWasOn, target.lightWasOn, sink);
       }
       i += 1;
     }

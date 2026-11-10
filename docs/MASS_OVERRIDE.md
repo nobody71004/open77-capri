@@ -216,6 +216,18 @@ Both paths set a desired state rather than flipping one, so running them togethe
 
 `SetLight` returning false when `IsOn()` already matches is what makes the blackout hold cheap: each one-second re-assert only touches the lights a device has switched back on.
 
+### What the revert puts back
+
+Each target records two booleans before anything is switched — `screenWasOn` and `lightWasOn` — read in `Fill` during the sweep (which runs before the apply pass) and, for a cache hit, in `Recall` at the moment the cached device is turned back into a target. The revert then restores each part to that state rather than switching everything on:
+
+```redscript
+MassOverrideEffects.Switch(object, target.screenWasOn, target.lightWasOn, sink);
+```
+
+`Switch` is the same body as `BlinkReported` with the two parts separated, so a newsstand screen that was already dark stays dark, and a lamp that was off before the cast stays off. The blink's final pulse calls `RestoreAll` for the same reason — it used to end "lit", which both ruined a pre-darkened street and, because the pulse count outran the revert, could re-light everything one second *after* the revert had already restored it.
+
+People have no prior state: they are released from hostility, which is a clean yes/no. Because restore compares state before switching, running it twice (final pulse, then revert) is a no-op the second time.
+
 ### Picking the mode per cast
 
 The choice lives in Mass Override's own state (`MassOverridePrefs`, a scriptable service in `Open77MassOverride.reds`), because the two obvious surfaces are both closed:
