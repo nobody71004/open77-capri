@@ -10,8 +10,7 @@ function mockAdapter(targets) {
     events,
     sweep: () => targets,
     setHostile: (id, on) => calls.push(["hostile", id, on]),
-    setLights: (id, on) => calls.push(["lights", id, on]),
-    setScreen: (id, on) => calls.push(["screen", id, on]),
+    setBlink: (id, on) => calls.push(["blink", id, on]),
     broadcast: (e) => events.push(e),
   };
 }
@@ -42,25 +41,40 @@ function setup(targets, extra = {}) {
   };
 }
 
-test("owner cast applies hostility and effects, then reverts on timer", () => {
+test("a cast turns people hostile and blacks out screens, billboards, lights and vehicles", () => {
   const targets = [
     { id: "npc1", type: "npc" },
     { id: "light1", type: "light" },
     { id: "tv1", type: "screen" },
+    { id: "billboard1", type: "billboard" },
+    { id: "car1", type: "vehicle" },
   ];
   const { adapter, layer, owner, advance } = setup(targets);
   const res = layer.request(owner);
   assert.equal(res.ok, true);
-  assert.equal(res.targets, 3);
+  assert.equal(res.targets, 5);
   assert.ok(adapter.calls.some((c) => c[0] === "hostile" && c[1] === "npc1" && c[2] === true));
-  assert.ok(adapter.calls.some((c) => c[0] === "lights" && c[1] === "light1" && c[2] === true));
-  assert.ok(adapter.calls.some((c) => c[0] === "screen" && c[1] === "tv1" && c[2] === true));
+  for (const id of ["light1", "tv1", "billboard1", "car1"]) {
+    assert.ok(
+      adapter.calls.some((c) => c[0] === "blink" && c[1] === id && c[2] === true),
+      `${id} should be blinked`,
+    );
+  }
+  assert.equal(
+    adapter.calls.filter((c) => c[0] === "hostile").length,
+    1,
+    "hostility is only applied to puppets",
+  );
   assert.equal(adapter.events[0].kind, "mass_override_start");
 
   advance(30_000);
   assert.ok(adapter.calls.some((c) => c[0] === "hostile" && c[1] === "npc1" && c[2] === false));
-  assert.ok(adapter.calls.some((c) => c[0] === "lights" && c[1] === "light1" && c[2] === false));
-  assert.ok(adapter.calls.some((c) => c[0] === "screen" && c[1] === "tv1" && c[2] === false));
+  for (const id of ["light1", "tv1", "billboard1", "car1"]) {
+    assert.ok(
+      adapter.calls.some((c) => c[0] === "blink" && c[1] === id && c[2] === false),
+      `${id} should be restored`,
+    );
+  }
   assert.equal(adapter.events.at(-1).kind, "mass_override_end");
 });
 

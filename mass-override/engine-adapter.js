@@ -1,13 +1,22 @@
 // Mass Override wiring: runs a cast through the gate, applies the effects
 // through an engine adapter, and reverts them when the duration ends.
-// The adapter is the only part that touches the game. Its methods map to
-// verified vanilla calls (see docs/MASS_OVERRIDE.md, "Verified engine calls"):
-//   sweep(player)          -> candidate targets within the radius
-//   setHostile(id, on)     -> AttitudeAgent.SetAttitudeTowards(AIA_Hostile) / revert
-//   setLights(id, on)      -> ToggleLightEvent on the device
-//   setScreen(id, on)      -> AdvertisementWidgetComponent Toggle(bool)
-//   broadcast(event)       -> one visual event to every client
-// Vehicle hostility and screen content are not confirmed in-game; see the doc.
+//
+// The adapter is the only part that touches the game. Its methods map to calls
+// read from the game's own shipped sources (docs/MASS_OVERRIDE.md):
+//   sweep(player)       -> candidate targets within the radius
+//   setHostile(id, on)  -> AttitudeAgent.SetAttitudeTowards(AIA_Hostile) / revert
+//   setBlink(id, on)    -> IComponent.Toggle on that entity's world widget
+//                          components (billboards, TVs, LCD screens) and its
+//                          lights, including vehicle lights
+//   broadcast(event)    -> one event to every client
+//
+// A target's type decides the effect, and only two effects exist:
+//   "npc"    people turn hostile
+//   "device" screens, billboards, TVs, lights and vehicles go dark
+// Anything that is not a puppet is blinked, because hostility is only defined
+// for a puppet. `on` is true when the override starts and false when it reverts;
+// the engine layer maps it onto the component toggle (dark on start, back on
+// revert).
 
 const { createMassOverride, REASONS } = require("./gate");
 
@@ -20,9 +29,8 @@ function createEngineLayer(adapter, options = {}) {
   const unschedule = options.unschedule ?? clearTimeout;
 
   function applyTarget(t, on) {
-    adapter.setHostile(t.id, on);
-    if (t.type === "light" || t.type === "device") adapter.setLights(t.id, on);
-    if (t.type === "screen") adapter.setScreen(t.id, on);
+    if (t.type === "npc") adapter.setHostile(t.id, on);
+    else adapter.setBlink(t.id, on);
   }
 
   // Request from a client. The server does the sweep; the client sends only
