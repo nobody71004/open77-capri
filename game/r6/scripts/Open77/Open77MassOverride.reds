@@ -124,6 +124,44 @@ public class MassOverridePrefs extends ScriptableService {
   public func Pinned() -> Bool { return this.m_pinned >= 0; }
 }
 
+// Registration check for the two services above, so a service that never
+// registered is stated in the log instead of being inferred from a mode that never
+// changes or a cache that never hits. Each lookup uses the same two spellings as the
+// service's own Get(), and names the one that answered.
+public class MassOverrideDiag {
+  public static func CacheService() -> String {
+    let container: ScriptableServiceContainer = GameInstance.GetScriptableServiceContainer();
+    if IsDefined(container.GetService(n"MassOverrideCache") as MassOverrideCache) {
+      return "cache=MassOverrideCache";
+    }
+    if IsDefined(container.GetService(n"Open77.MassOverrideCache") as MassOverrideCache) {
+      return "cache=Open77.MassOverrideCache";
+    }
+    return "cache=none";
+  }
+
+  public static func PrefsService() -> String {
+    let container: ScriptableServiceContainer = GameInstance.GetScriptableServiceContainer();
+    if IsDefined(container.GetService(n"MassOverridePrefs") as MassOverridePrefs) {
+      return "prefs=MassOverridePrefs";
+    }
+    if IsDefined(container.GetService(n"Open77.MassOverridePrefs") as MassOverridePrefs) {
+      return "prefs=Open77.MassOverridePrefs";
+    }
+    return "prefs=none";
+  }
+
+  public static func Describe() -> String {
+    return MassOverrideDiag.CacheService() + " " + MassOverrideDiag.PrefsService();
+  }
+
+  public static func AllPresent() -> Bool {
+    let cache: String = MassOverrideDiag.CacheService();
+    let prefs: String = MassOverrideDiag.PrefsService();
+    return !Equals(cache, "cache=none") && !Equals(prefs, "prefs=none");
+  }
+}
+
 // What one cast actually did, for the log. The counters are the measurement: a
 // fill runs inside one frame, so sim time generally does not advance within it and
 // `seconds` is the whole cast measured outside, which can honestly read 0.

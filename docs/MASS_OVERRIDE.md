@@ -89,6 +89,7 @@ What each field means when you are chasing the 100 / 500 / 1000 target numbers:
 - `changed` — components actually switched by the first pass. Screens have several widgets, so this exceeds `devices`.
 - `targets` — size of the list handed to the effect, i.e. what the cap applied to. `targets` near `cap` means the cap, not the block, is the limit.
 - `cache` / `blocks` — whether the devices came from the area cache and how many areas it holds.
+- `services` — which service name actually registered, or `none`. `cache=MassOverrideCache prefs=MassOverridePrefs` is healthy; `Open77.` prefixed names mean the module-qualified spelling is the one being served; `none` means that service did not register, and a separate `[MassOverride] service missing:` line is then logged on the same cast so it cannot be missed. This is the field that distinguishes "the mode never changes" from "the mode service never loaded", and "the cache never hits" from "the cache service is absent".
 - `secs` — the cast measured outside the work. A fill runs inside one frame, so sim time usually does not advance within it and this can honestly read `0.000`. Treat the counts as the measurement and this as a sanity check.
 
 To read the three data points, cast in a quiet block (`targets` around 100), a busy one (around 500) and a dense one such as a market street at night (around 1000), and read `probes` against `targets` in each line. `Instrumented()` returns false to silence the line.

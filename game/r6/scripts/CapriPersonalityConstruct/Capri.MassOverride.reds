@@ -121,6 +121,7 @@ public class CapriMassOverride extends IScriptable {
             // One grep-able line per cast. At 100, 500 and 1000 targets the counts
             // are the measurement; `secs` is reported too, but a fill happens in a
             // single frame, so it can honestly read 0.000.
+            let services: String = MassOverrideDiag.Describe();
             FTLog("[MassOverride] mode=" + (blackout ? "blackout" : "blink")
                 + " area=" + MassOverrideArea.Name(game, player.GetWorldPosition())
                 + " cache=" + (stats.cacheHit ? "hit" : "miss")
@@ -135,7 +136,13 @@ public class CapriMassOverride extends IScriptable {
                 + " changed=" + ToString(stats.changed)
                 + " targets=" + ToString(ArraySize(targets))
                 + " cap=" + ToString(CapriMassOverride.Cap())
-                + " secs=" + ToString(stats.seconds));
+                + " secs=" + ToString(stats.seconds)
+                + " services=" + services);
+            // Said out loud, not inferred: a service that did not register explains a
+            // mode that never alternates or a cache that never hits.
+            if !MassOverrideDiag.AllPresent() {
+                FTLog("[MassOverride] service missing: " + services);
+            }
         }
         return "";
     }
