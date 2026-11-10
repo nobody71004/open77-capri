@@ -28,9 +28,10 @@ public class CapriMassOverride extends IScriptable {
     public static func Instrumented() -> Bool { return true; }
 
     // The mode for the next cast, taken from Mass Override's own state
-    // (MassOverridePrefs): blackout is pinned by default, Auto() alternates blink and
-    // blackout cast by cast, and Pin() fixes one. This is deliberately NOT read from
-    // Capri's settings --
+    // (MassOverridePrefs): the first cast is blackout and every cast after it flips
+    // between blackout and blink, so both are reachable per cast with nothing to
+    // press and nothing to edit; Pin() fixes one and Auto() resumes alternating. This
+    // is deliberately NOT read from Capri's settings --
     // `settings.unleashed` is her quickhack tier (Capri.Storage.reds: "her quickhacks
     // at their strongest tier"), and mapping a visual mode onto it made blackout
     // unreachable for anyone who had that turned off.

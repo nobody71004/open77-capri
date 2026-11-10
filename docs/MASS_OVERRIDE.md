@@ -217,7 +217,7 @@ The choice lives in Mass Override's own state (`MassOverridePrefs`, a scriptable
 - Capri's settings are her *quickhack tier*, not a visual mode — mapping blackout onto `unleashed` was the bug that made blackout unreachable.
 - Her action table (`CapriActions.Run(player, action, out hits)`) does not dispatch to Mass Override at all yet, and adding an action there means editing a Capri file, which is exactly the kind of cross-file reference that broke the whole script set twice.
 
-So the default is **blackout, pinned**, so it can be tested exactly as it ships with nothing to press and nothing to edit. The preference is kept in the service, so it survives across casts within a session:
+So the default is **one choice per cast, starting with blackout**: the first cast holds the block dark, the next blinks, the one after holds it dark again. Both modes are reachable per cast with nothing to press and nothing to edit, and blackout needs no edit to test because it is what the first cast does. The preference is kept in the service, so it survives across casts within a session:
 
 ```redscript
 CapriMassOverride.Pin(MassOverrideMode.Blackout()); // every cast from now on
@@ -227,7 +227,7 @@ CapriMassOverride.Auto();                           // alternate again
 
 `RunWith(player, system, mode)` still takes a mode explicitly and bypasses the preference entirely, so a future action-table wiring can pass whatever Capri's request asks for without touching this policy.
 
-If the service is unavailable, `Mode()` falls back to blink rather than failing a cast. The log line reports whichever mode actually ran (`mode=blink` / `mode=blackout`), which is the quickest way to confirm the alternation is working.
+If the service is unavailable, `Mode()` falls back to blackout rather than failing a cast — the same choice the first cast makes anyway. The log line reports whichever mode actually ran (`mode=blink` / `mode=blackout`), which is the quickest way to confirm the alternation is working.
 
 One inconsistency worth knowing: the Node gate (`mass-override/gate.js`) still carries a single fixed `mode`, so a server-broadcast event and the redscript side can disagree about which mode a cast used. Nothing wires the two together yet; when the server owns the decision, `gate.js` should mirror this preference rather than its own default.
 - Traffic lights: red, yellow and green are light components on the device, selected by `ToggleLightByNameEvent` (trafficLight.script), so the light-component switch covers them.

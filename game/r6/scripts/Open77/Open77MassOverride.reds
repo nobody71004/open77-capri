@@ -87,14 +87,15 @@ public class MassOverrideKind {
 // Which mode a cast uses. This is Mass Override's own state: no Capri setting, no
 // other Capri file, no keybind and no item.
 //
-// Blackout is pinned by default, so it can be tested exactly as it ships and
-// without editing a return statement. Auto() releases the pin and alternates one
-// cast at a time (blink, blackout, blink...), and Pin() fixes whichever mode is
-// wanted. Nothing else in the game can select it: Capri's settings are her quickhack
-// tier, which is not a visual mode, and her action table does not dispatch here yet.
+// The mode is chosen per cast, one cast at a time, and the sequence starts with
+// blackout: the first cast is visible as shipped and needs no edit to test, and each
+// cast after it flips, blackout then blink. Pin() fixes one mode for every cast
+// until Auto() resumes alternating. Nothing else in the game can select it: Capri's
+// settings are her quickhack tier, which is not a visual mode, and her action table
+// does not dispatch here yet.
 public class MassOverridePrefs extends ScriptableService {
-  private let m_pinned: Int32 = 1;  // -1 = alternate, 0 = blink, 1 = blackout
-  private let m_next: Int32 = 0;    // what the next unpinned cast uses (0 = blink)
+  private let m_pinned: Int32 = -1; // -1 = alternate, 0 = blink, 1 = blackout
+  private let m_next: Int32 = 1;    // what the next unpinned cast uses (1 = blackout)
 
   public static func Get() -> ref<MassOverridePrefs> {
     let service: ref<MassOverridePrefs> =
