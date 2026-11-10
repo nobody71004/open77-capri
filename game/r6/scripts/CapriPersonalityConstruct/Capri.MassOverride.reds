@@ -27,18 +27,29 @@ public class CapriMassOverride extends IScriptable {
     // 1 logs one measurement line per cast. Set it false to silence the log.
     public static func Instrumented() -> Bool { return true; }
 
-    // Blink is the default: the block strobes, which reads as an overload rather
-    // than a power cut. To use blackout instead, change the single return below to
-    // MassOverrideMode.Blackout(); RunWith also takes a mode explicitly.
-    //
-    // This is deliberately NOT read from Capri's settings. It used to map
-    // `settings.unleashed` onto blackout, and `unleashed` is her quickhack-tier
-    // setting (Capri.Storage.reds: "her quickhacks at their strongest tier"), which
-    // is true by default and off for anyone paying per-target RAM. So the mode was
-    // being decided by an unrelated gameplay toggle, and blackout was unreachable
-    // for anyone who had turned that off.
+    // The mode for the next cast, taken from Mass Override's own state
+    // (MassOverridePrefs): unpinned alternates blink and blackout cast by cast, and
+    // Pin() fixes one. This is deliberately NOT read from Capri's settings --
+    // `settings.unleashed` is her quickhack tier (Capri.Storage.reds: "her quickhacks
+    // at their strongest tier"), and mapping a visual mode onto it made blackout
+    // unreachable for anyone who had that turned off.
     public static func Mode() -> Int32 {
+        let prefs: ref<MassOverridePrefs> = MassOverridePrefs.Get();
+        if IsDefined(prefs) { return prefs.Mode(); }
         return MassOverrideMode.Blink();
+    }
+
+    // Fix a mode for every following cast, or pass -1 to alternate again. Both are
+    // one call, so Capri's own action code can choose per request when Mass Override
+    // is wired into her action table.
+    public static func Pin(mode: Int32) -> Void {
+        let prefs: ref<MassOverridePrefs> = MassOverridePrefs.Get();
+        if IsDefined(prefs) { prefs.Pin(mode); }
+    }
+
+    public static func Auto() -> Void {
+        let prefs: ref<MassOverridePrefs> = MassOverridePrefs.Get();
+        if IsDefined(prefs) { prefs.Auto(); }
     }
 
     // Run from CapriActions.Run. Returns "" when it worked, else why not (for the LLM and log).

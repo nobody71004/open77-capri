@@ -84,6 +84,46 @@ public class MassOverrideKind {
   public static func Vehicle() -> Int32 { return 3; }
 }
 
+// Which mode a cast uses. This is Mass Override's own state: no Capri setting, no
+// other Capri file, no keybind and no item.
+//
+// Unpinned is the default, and it alternates one cast at a time: the first blinks,
+// the next holds the block dark, then blink again. That is what makes blackout
+// reachable per cast with nothing to press and nothing to edit -- the only other
+// surfaces for a choice are Capri's settings (her quickhack tier, which is not a
+// visual mode) and her action table (which does not dispatch to Mass Override yet).
+// Pin either mode and every cast follows it until Auto() is called again.
+public class MassOverridePrefs extends ScriptableService {
+  private let m_pinned: Int32 = -1; // -1 = alternate, else the mode every cast uses
+  private let m_next: Int32 = 0;    // what the next unpinned cast uses (0 = blink)
+
+  public static func Get() -> ref<MassOverridePrefs> {
+    let service: ref<MassOverridePrefs> =
+      GameInstance.GetScriptableServiceContainer().GetService(n"MassOverridePrefs") as MassOverridePrefs;
+    if IsDefined(service) { return service; }
+    return GameInstance.GetScriptableServiceContainer().GetService(n"Open77.MassOverridePrefs") as MassOverridePrefs;
+  }
+
+  // Each cast consumes one: this is the per-cast choice. A null service leaves the
+  // caller on blink, so the fallback is the old behaviour rather than no effect.
+  public func Mode() -> Int32 {
+    if this.m_pinned >= 0 { return this.m_pinned; }
+    let mode: Int32 = this.m_next;
+    if mode == MassOverrideMode.Blink() {
+      this.m_next = MassOverrideMode.Blackout();
+    } else {
+      this.m_next = MassOverrideMode.Blink();
+    }
+    return mode;
+  }
+
+  public func Pin(mode: Int32) -> Void { this.m_pinned = mode; }
+
+  public func Auto() -> Void { this.m_pinned = -1; }
+
+  public func Pinned() -> Bool { return this.m_pinned >= 0; }
+}
+
 // What one cast actually did, for the log. The counters are the measurement: a
 // fill runs inside one frame, so sim time generally does not advance within it and
 // `seconds` is the whole cast measured outside, which can honestly read 0.
