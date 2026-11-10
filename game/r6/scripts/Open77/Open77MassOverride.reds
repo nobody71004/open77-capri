@@ -171,6 +171,15 @@ public class MassOverridePrefs extends ScriptableService {
 
   public func Pinned() -> Bool { return this.m_pinned >= 0; }
 
+  // The pin as a word, for the cast log line: "none" while casts alternate, else the
+  // mode Pin() fixed. A log that only named the mode could not tell a pinned blink
+  // that happens to follow a blink from an alternating one.
+  public func PinnedMode() -> String {
+    if this.m_pinned == MassOverrideMode.Blink() { return "blink"; }
+    if this.m_pinned == MassOverrideMode.Blackout() { return "blackout"; }
+    return "none";
+  }
+
   // Remembered here rather than in a static, because redscript has no static fields:
   // the first service that does register carries the flag for the ones that did not.
   public func WarnedMissing() -> Bool { return this.m_warnedMissing; }

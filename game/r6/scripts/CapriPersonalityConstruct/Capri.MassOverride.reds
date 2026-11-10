@@ -77,6 +77,15 @@ public class CapriMassOverride extends IScriptable {
         return "local";
     }
 
+    // The pin in force, for the cast log line: "none" when casts alternate, otherwise
+    // the mode Pin() fixed. Read separately from Mode(), which a server broadcast can
+    // override for one cast.
+    public static func PinLabel() -> String {
+        let prefs: ref<MassOverridePrefs> = MassOverridePrefs.Get();
+        if IsDefined(prefs) { return prefs.PinnedMode(); }
+        return "none";
+    }
+
     // Fix a mode for every following cast, or pass -1 to alternate again. Both are
     // one call, so Capri's own action code can choose per request when Mass Override
     // is wired into her action table.
@@ -185,6 +194,7 @@ public class CapriMassOverride extends IScriptable {
             let services: String = MassOverrideDiag.Describe();
             FTLog("[MassOverride] mode=" + (blackout ? "blackout" : "blink")
                 + " modeSource=" + CapriMassOverride.ModeSource()
+                + " pin=" + CapriMassOverride.PinLabel()
                 + " area=" + MassOverrideArea.Name(game, player.GetWorldPosition())
                 + " cache=" + (stats.cacheHit ? "hit" : "miss")
                 + " blocks=" + ToString(stats.blocks)

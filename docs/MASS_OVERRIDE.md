@@ -77,12 +77,13 @@ One consequence: on a cache hit, people are gathered only around V, because the 
 `FTLog` is this project's log call (Capri uses it throughout), and `EngineTime.ToFloat(GameInstance.GetSimTime(game))` is the clock. Every cast logs one line:
 
 ```
-[MassOverride] mode=blink area=Watson:12:-3 cache=miss blocks=1 probes=12 parts=931
+[MassOverride] mode=blink modeSource=local pin=none area=Watson:12:-3 cache=miss blocks=1 probes=12 parts=931
   people=142 devices=812 changed=940 targets=954 cap=1000 secs=0.000
 ```
 
 What each field means when you are chasing the 100 / 500 / 1000 target numbers:
 
+- `mode` — the mode this cast ran, `blink` or `blackout`. `modeSource` says who picked it: `server` when a broadcast supplied it, `local` when the pin, the cursor or the clock did. `pin` says whether a pin is in force (`none` while casts alternate), so `mode=blink pin=none` is an alternating cast and `mode=blink pin=blink` one a pin chose — the pair is what tells the two apart in a session log.
 - `probes` — targeting queries issued. 1 on a cache hit, up to `MaxProbes` (64) on a miss. This is the number that decides whether the fill is affordable.
 - `parts` — target parts those queries returned, i.e. everything the targeting system looked at before filtering.
 - `devices` / `people` — what survived the filter and became targets.
@@ -247,7 +248,7 @@ CapriMassOverride.Auto();                           // alternate again
 
 `RunWith(player, system, mode)` still takes a mode explicitly and bypasses the preference entirely, so a future action-table wiring can pass whatever Capri's request asks for without touching this policy.
 
-If the service is unavailable, the mode does not collapse to one value: `Mode(game)` falls through to `ModeFromClock(game)`, which returns blackout on an even second of sim time and blink on an odd one. Both modes stay reachable with nothing registered and nothing to edit — the service only turns that into a clean per-cast alternation instead of a clock-driven one. Two casts inside the same second repeat the mode, so waiting a second flips it. This is why `Mode` takes the game instance: the fallback needs sim time. The log line reports whichever mode actually ran (`mode=blink` / `mode=blackout`), which is the quickest way to confirm the alternation is working.
+If the service is unavailable, the mode does not collapse to one value: `Mode(game)` falls through to `ModeFromClock(game)`, which returns blackout on an even second of sim time and blink on an odd one. Both modes stay reachable with nothing registered and nothing to edit — the service only turns that into a clean per-cast alternation instead of a clock-driven one. Two casts inside the same second repeat the mode, so waiting a second flips it. This is why `Mode` takes the game instance: the fallback needs sim time. The log line reports whichever mode actually ran (`mode=blink` / `mode=blackout`), which is the quickest way to confirm the alternation is working, and `pin=none|blink|blackout` beside it says whether a pin chose it: `mode=blink pin=none` is an alternating cast, `mode=blink pin=blink` is a pinned one, so a log can tell a pinned mode from one that merely came up next.
 
 ### The gate mirrors it
 
