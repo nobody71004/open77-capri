@@ -462,10 +462,22 @@ public class MassOverrideEffects {
   // table. State is compared first so a revert does not re-run a light that is
   // already where it should be, and so the hold can tell whether a device has
   // switched its light back on behind us.
+  //
+  // The component toggle is kept as the fallback: a light whose IsOn() never
+  // changes (no light state to set, or a component that ignores ToggleLight) is
+  // still hidden by disabling the component, which is how every screen is switched.
+  // Both express the same desired state, so they cannot fight each other.
   private static func SetLight(light: ref<gameLightComponent>, on: Bool) -> Bool {
-    if light.IsOn() == on { return false; }
-    light.ToggleLight(on, false);
-    return true;
+    let changed: Bool = false;
+    if light.IsOn() != on {
+      light.ToggleLight(on, false);
+      changed = true;
+    }
+    if light.IsEnabled() != on {
+      light.Toggle(on);
+      changed = true;
+    }
+    return changed;
   }
 
   // One swipe of the whole target list: dark or lit. Used by the blackout (once
