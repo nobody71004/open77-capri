@@ -28,20 +28,17 @@ public class CapriMassOverride extends IScriptable {
     public static func Instrumented() -> Bool { return true; }
 
     // Blink is the default: the block strobes, which reads as an overload rather
-    // than a power cut. Capri's own `unleashed` setting is the switch that already
-    // exists in her build, so blackout is selectable today without a new storage
-    // field and without editing another Capri file. RunWith is the explicit door
-    // for a future per-action choice.
+    // than a power cut. To use blackout instead, change the single return below to
+    // MassOverrideMode.Blackout(); RunWith also takes a mode explicitly.
+    //
+    // This is deliberately NOT read from Capri's settings. It used to map
+    // `settings.unleashed` onto blackout, and `unleashed` is her quickhack-tier
+    // setting (Capri.Storage.reds: "her quickhacks at their strongest tier"), which
+    // is true by default and off for anyone paying per-target RAM. So the mode was
+    // being decided by an unrelated gameplay toggle, and blackout was unreachable
+    // for anyone who had turned that off.
     public static func Mode() -> Int32 {
-        let storage: ref<CapriStorage> = CapriStorage.Get();
-        if !IsDefined(storage) {
-            return MassOverrideMode.Blink();
-        }
-        let settings: ref<CapriSettingsDTO> = storage.settings;
-        if !IsDefined(settings) {
-            return MassOverrideMode.Blink();
-        }
-        return settings.unleashed ? MassOverrideMode.Blackout() : MassOverrideMode.Blink();
+        return MassOverrideMode.Blink();
     }
 
     // Run from CapriActions.Run. Returns "" when it worked, else why not (for the LLM and log).
@@ -79,11 +76,22 @@ public class CapriMassOverride extends IScriptable {
             }
             i += 1;
         }
-        if !blackout {
+        let cycles: Int32 = RoundF(CapriMassOverride.Duration() / MassOverridePulse.Interval()) + 1;
+        if blackout {
+            // Not a single toggle: a device's own controller switches its screen and
+            // lights back on within a frame or two. The blink survived because it
+            // re-asserts twice a second; the one-shot blackout did not, and read as
+            // nothing happening. Hold it dark for the duration instead.
+            let hold: ref<MassOverrideHold> = new MassOverrideHold();
+            hold.game = game;
+            hold.targets = targets;
+            hold.cyclesLeft = cycles;
+            GameInstance.GetDelaySystem(game).DelayCallback(hold, MassOverrideHold.Interval(), false);
+        } else {
             let pulse: ref<MassOverridePulse> = new MassOverridePulse();
             pulse.game = game;
             pulse.targets = targets;
-            pulse.cyclesLeft = RoundF(CapriMassOverride.Duration() / MassOverridePulse.Interval()) + 1;
+            pulse.cyclesLeft = cycles;
             pulse.lit = false;
             GameInstance.GetDelaySystem(game).DelayCallback(pulse, MassOverridePulse.Interval(), false);
         }

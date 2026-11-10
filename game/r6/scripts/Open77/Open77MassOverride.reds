@@ -512,6 +512,33 @@ public class MassOverridePulse extends DelayCallback {
   }
 }
 
+// Blackout mode: re-asserts dark on a timer instead of switching once.
+//
+// A single Toggle(false) is not enough. A device's own controller keeps its screen
+// and lights in step with its state, so it switches its component back on within a
+// frame or two -- which is exactly why the blink survived (it re-asserts twice a
+// second) while the one-shot blackout looked like nothing had happened at all.
+// This holds the block dark for the whole duration and then lets the revert light
+// it back up.
+public class MassOverrideHold extends DelayCallback {
+  public let game: GameInstance;
+  public let targets: array<ref<MassOverrideTarget>>;
+  public let cyclesLeft: Int32;
+
+  public static func Interval() -> Float { return 1.0; }
+
+  public func Call() -> Void {
+    MassOverrideEffects.SetAll(this.game, this.targets, false);
+    if this.cyclesLeft > 1 {
+      let next: ref<MassOverrideHold> = new MassOverrideHold();
+      next.game = this.game;
+      next.targets = this.targets;
+      next.cyclesLeft = this.cyclesLeft - 1;
+      GameInstance.GetDelaySystem(this.game).DelayCallback(next, MassOverrideHold.Interval(), false);
+    }
+  }
+}
+
 // Puts everything back when the effect's duration ends. Dismissing Capri does
 // not end it early, so this runs on the delay system rather than on Capri.
 public class MassOverrideRevert extends DelayCallback {

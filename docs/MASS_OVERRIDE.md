@@ -185,6 +185,13 @@ The RTTI table the Red4ext plugin ships (`red4ext/plugins/Open77/rtti-manifest-2
 `VehicleObject` is the script-side class Capri already casts to (`Capri.Actions.reds`), so it is safe here too; casting to a name that only exists as an enum value would not compile.
 
 One thing that table does *not* settle: `TSFMV` has no vehicle flag in 2.31 — only `Obj_Puppet`, `Obj_Player`, `Obj_Device`, `Obj_Sensor` and `Obj_Other`. So whether a targeting probe returns a car is unproven on paper, and the `vehicles=` count in a real cast is the test: a non-zero count in traffic means cars are reached, zero on a street full of parked cars means they are not.
+
+### Why blackout did not work
+
+Two faults, both in the mode plumbing:
+
+1. **It was switched once and then overwritten.** A device's own controller keeps its screen and lights in step with its state, so it switches its component back on within a frame or two. The blink survived that because each pulse re-asserts twice a second; the blackout toggled once at the start and was silently undone, which read as nothing happening. Blackout now uses `MassOverrideHold`, which re-asserts dark every second for the whole duration, and the revert lights it back up after.
+2. **The mode was being decided by an unrelated setting.** `Mode()` mapped `settings.unleashed` onto blackout. That field is Capri's quickhack-tier setting (`Capri.Storage.reds`: "her quickhacks at their strongest tier"), true by default and off for anyone paying per-target RAM — so blackout was unreachable for anyone who had turned it off, and switched on without being asked for anyone who had not. `Mode()` now returns `MassOverrideMode.Blink()` and says to change that one line for blackout; `RunWith(player, system, mode)` remains the explicit door.
 - Traffic lights: red, yellow and green are light components on the device, selected by `ToggleLightByNameEvent` (trafficLight.script), so the light-component switch covers them.
 - Warning/search lights: `BlindingLight` and `DestructibleMasterLight` are devices whose `TurnOffDevice` ends in their own light toggle; they are reached as entities.
 - Widget component names differ per device (`ui`, `ads`, `tv_ui`, `radio_ui`, `terminalui`), so components are selected by class, not by name.
