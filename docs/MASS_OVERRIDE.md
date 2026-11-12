@@ -391,16 +391,31 @@ What makes Japantown bright is not devices. The billboards and ad screens are wo
 
 New report fields: `inkLayers`, `worldWidgets`, `inkTargets`, `lightComponents`, `inkNames` (cast) and `ink`, `lightComponents` (revert).
 
+Verified on XyberRP Staging, 2026-11-12, Corpo Plaza at 03:00 in-game, blink: 59 machines glitching (59/59 at 2 s), 111 lights and 290 light components on the beat, the `inkAdvertisementsLayer` and `inkWorldLayer` roots plus 6 world widgets blinking in the hack colours, 5 cars accelerating with their alarms, 5 people panicking; `settled` had 0 glitching and 111/111 lights back as they were. V saw the street change.
+
+### Production
+
+XyberRP runs the same 1.16.15 scripts with its own gate:
+
+| | Staging | Production |
+| --- | --- | --- |
+| Server | XyberRP Staging, `/opt/open77-xbuniverse-staging` | XyberRP, `/opt/open77-xbuniverse` |
+| Gate | `open77-mass-override-staging`, 127.0.0.1:11900 | `open77-mass-override`, 127.0.0.1:11901 |
+| Public base | `https://xyberrp.duckdns.org/mass-override-staging/` | `https://xyberrp.duckdns.org/mass-override/` |
+| Package | `CapriPersonalityConstruct-1.16.15-massoverride-street.zip` | the same with the gate base swapped and the feed labelled `production` |
+
+The scripts in this repo name the staging base; `mass-override/release/mo-build-prod-11615.py` makes the production package from the staging one and proves that only the gate base and the feed label changed. Both gates run the same `gate.js` and `dev-server.js` (`mass-override/deploy` has the units and the nginx locations), so each environment keeps its own cooldowns, casts and reports. The release scripts and how to run them are in `mass-override/release/README.md`.
+
 ### Compile check without the game
 
 `scc.exe` pops a modal dialog when a compile fails, which is not acceptable while someone is playing. `scripts/MoScc.cs` (a 70-line wrapper, built with the .NET Framework `csc.exe`) loads the game's own `engine/tools/scc_lib.dll` and calls `scc_settings_disable_error_popup` before `scc_compile`. It compiles a sandbox copy of `r6/scripts` plus the three RED4ext plugin script folders against a copy of `r6/cache/final.redscripts`, so the running game's files are never touched. 1.16.11: `Completed with 603 warnings and 0 errors` (the same 603 as the game's own build); a deliberate call to a missing method failed with `UNRESOLVED_MEMBER` and no dialog.
 
 ## Verification status
 
-- Node tests: `node --test mass-override/gate.test.js mass-override/engine-adapter.test.js mass-override/dev-server.test.js mass-override/reds-lint.test.js mass-override/reds-lint-angle.test.js` — 35/35 pass (gate, engine layer, the local server driven over HTTP, and the static script checker).
-- Live server: a funded cast returned 200 with mode `blackout` and three targets, charged 25 of 100, then `on_cooldown`, `not_summoned` and `not_owner` each refused with 409 and no effects; a 400 ms cast expired and handed back its two claims for revert. This is the local shim, not the game: nobody in a session is being charged yet.
-- Game scripts: the last redscript build (2026-11-10 13:57Z) ended `Completed with 521 warnings and 0 errors` and included both Mass Override files. That build predates the current copies, so the current revision has NOT been compiled: `scc.exe` accepts only `.script`, and redscript runs only when the game starts. `reds-lint.js` — unbalanced braces, call arity, unknown methods, and symbols declared in either file — is clean on the current copies, which are byte-identical to the installed ones.
-- Not run in-game. Coverage, visuals and frame cost are unconfirmed.
+- Node tests: `gate.test.js` 13, `engine-adapter.test.js` 7, `dev-server.test.js` 10, `reds-lint.test.js` 8, `reds-lint-angle.test.js` 2 - 40/40 pass (run each file with `node --test`).
+- Game scripts: `scripts/MoScc.cs` against a copy of the game's scripts, `Completed with 603 warnings and 0 errors` for 1.16.15 and for its production variant (the same 603 warnings as the game's own build).
+- In game: 1.16.15 on XyberRP Staging, cast by a player and seen working (see 1.16.15 above), with every report from cast to final.
+- Production: XyberRP serves 1.16.15 with the production gate; checked with `mo-verify-prod-11615.py` (manifest, blob hash, scripts inside, gate base), and `mo-gate-check.sh` showed each public route reaching its own gate. No production cast has been made yet.
 
 ## Open items
 

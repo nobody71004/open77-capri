@@ -1,0 +1,13 @@
+[Unit]
+Description=Open77 Mass Override feed (staging)
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/open77-mass-override-staging
+ExecStart=/usr/bin/node /opt/open77-mass-override-staging/dev-server.js
+Environment=MASS_OVERRIDE_PORT=11900
+Restart=on-failure
+User=root
+
+[Install]
+WantedBy=multi-user.target
