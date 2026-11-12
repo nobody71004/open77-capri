@@ -229,8 +229,11 @@ def build(old: bytes, url: str, host: str, world: str, version: str, strategy: s
     migrates put in migrated (game: this PC's game folder's Capri files, see migrate) and, for "patch", the one call
     in Capri.Storage.reds.  extras (1.16.17): {"files": {path: bytes}} put in as they are (Mass Override's two
     scripts, rendered for the server by capri_mo), {"voice": {"url", "langs"}} Capri Voz speaking with her voice
-    from the server (capri_voz: its two programs edited, servidor.json added).  Returns (zip bytes, report).
-    Everything else stays byte for byte."""
+    from the server (capri_voz: its two programs edited, servidor.json added); (2026-11-12) {"keys": True} her five
+    keys driven by Open77's key mappings (capri_keys: the edit to Capri.System.reds) -- without it a package that
+    carries that edit gets Capri's own file back.  Returns (zip bytes, report).  Everything else stays byte for
+    byte."""
+    import capri_keys as K  # noqa: PLC0415
     import capri_voz as Z  # noqa: PLC0415
     entries = read_zip(old)
     problems = capri_problems(entries)
@@ -277,6 +280,17 @@ def build(old: bytes, url: str, host: str, world: str, version: str, strategy: s
         except Z.VozError as e:
             raise BuildError(str(e)) from e
         extra |= {Z.PS1, Z.LINUX, Z.SERVIDOR}
+    keys = bool((extras or {}).get("keys"))
+    if keys:
+        missing = K.problems(entries)
+        if missing:
+            raise BuildError("her keys cannot be handed to Open77: " + "; ".join(missing))
+    if K.SYSTEM in entries and (keys or K.has(entries[K.SYSTEM].decode("utf-8", errors="replace"))):
+        try:
+            entries[K.SYSTEM] = K.edit(entries[K.SYSTEM], keys)
+        except K.KeysError as e:
+            raise BuildError(str(e)) from e
+        extra.add(K.SYSTEM)
     data = write_zip(entries)
 
     # what the zip holds now, read back
@@ -296,6 +310,10 @@ def build(old: bytes, url: str, host: str, world: str, version: str, strategy: s
         raise BuildError("the patched Capri.Storage.reds does not call the wiring exactly once")
     if strategy == "wrap" and PATCH_MARK in after[STORAGE].decode("utf-8"):
         raise BuildError("a wrap build still has the patch in Capri.Storage.reds")
+    if keys and not K.carries(after.get(K.SYSTEM, b"")):
+        raise BuildError(f"{K.SYSTEM} in the build does not carry her keys for Open77 as this kit writes them")
+    if not keys and K.SYSTEM in after and K.has(after[K.SYSTEM].decode("utf-8", errors="replace")):
+        raise BuildError(f"{K.SYSTEM} in the build still carries her keys for Open77")
     if voice:
         sv = Z.servidor_values(after.get(Z.SERVIDOR, b""))
         if sv.get("url") != voice["url"] or sv.get("mundo") != world or sv.get("paquete") != version:
@@ -317,6 +335,7 @@ def build(old: bytes, url: str, host: str, world: str, version: str, strategy: s
         "extra": sorted(extra),
         "voice": ({"host": voice["url"].split("/")[2], "langs": voice.get("langs")} if voice else None),
         "scripts_sha256": scripts_digest(after),
+        "keys": K.carries(after.get(K.SYSTEM, b"")),
     }
     return data, report
 

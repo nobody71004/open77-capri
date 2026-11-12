@@ -23,6 +23,7 @@ KIT = os.path.dirname(HERE)
 sys.path.insert(0, KIT)
 sys.path.insert(0, HERE)
 import capri_wire as W
+import capri_keys as K  # noqa: E402
 import capri_mo as MO
 import capri_voz as Z  # noqa: E402
 import fakes  # noqa: E402
@@ -100,6 +101,70 @@ def test_build():
     d2, r2 = W.build(d1, fakes.URL, fakes.HOST, "XyberRP", "1.16.17", "wrap")
     check("another address replaced", W.wired_values(entries(d2)[W.TARGET])["Url"] == fakes.URL and
           r2["had"]["Url"] == "another address")
+
+
+# ------------------------------------------------------------------------------------------------ her keys
+def test_keys():
+    """Her five keys driven by Open77's key mappings (capri_keys.py): the edit to Capri.System.reds."""
+    old = fakes.package()
+    o = entries(old)
+    data, rep = W.build(old, fakes.URL, fakes.HOST, "XyberRP", "1.16.19", "patch", extras={"keys": True})
+    e = entries(data)
+    sy = e[K.SYSTEM].decode()
+    check("keys: the report says so", rep["keys"] is True, rep.get("keys"))
+    check("keys: Capri.System.reds changed, nothing else but the brain's two", rep["changed"] ==
+          sorted([W.TARGET, W.STORAGE, K.SYSTEM]), rep["changed"])
+    check("keys: the edit once, both parts", sy.count(K.BEGIN) == 1 and sy.count(K.GATE_BEGIN) == 1 and K.carries(e[K.SYSTEM]))
+    check("keys: the static entry Open77.rtti calls", "public static func KeyFromHost(game: GameInstance, action: String, "
+          "down: Bool) -> String {" in sy and "public func OnHostKey(action: String, down: Bool) -> String {" in sy)
+    check("keys: her own reading of the keys rests right after the session check", (
+        "    private cb func OnKeyInput(event: ref<KeyInputEvent>) {\n        if !this.m_inSession {\n            return;\n"
+        "        }\n" + K.GATE_BEGIN) in sy and "        if this.HostHasKeys() {\n            return;\n        }\n" in sy)
+    check("keys: taken out again it is Capri's own file", K.unapply(sy) == o[K.SYSTEM].decode())
+    check("keys: Capri.Config.reds untouched", e[K.CONFIG] == o[K.CONFIG])
+    check("keys: every other file byte for byte", all(e[n] == o[n] for n in o if n not in (W.STORAGE, K.SYSTEM)))
+    data2, rep2 = W.build(data, fakes.URL, fakes.HOST, "XyberRP", "1.16.20", "patch", extras={"keys": True})
+    check("keys twice: still once, the same file", entries(data2)[K.SYSTEM] == e[K.SYSTEM] and K.SYSTEM not in
+          rep2["changed"], rep2["changed"])
+    data3, rep3 = W.build(data, fakes.URL, fakes.HOST, "XyberRP", "1.16.20", "patch")
+    check("keys off: a keyed package gets Capri's own file back", entries(data3)[K.SYSTEM] == o[K.SYSTEM] and
+          rep3["keys"] is False and K.SYSTEM in rep3["changed"], rep3["changed"])
+    data4, rep4 = W.build(old, fakes.URL, fakes.HOST, "XyberRP", "1.16.19", "patch")
+    check("keys never asked: Capri.System.reds untouched", entries(data4)[K.SYSTEM] == o[K.SYSTEM] and
+          K.SYSTEM not in rep4["changed"] and rep4["keys"] is False)
+    check("keys: the scripts digest moves with it", rep["scripts_sha256"] != rep4["scripts_sha256"])
+    # CRLF stays CRLF
+    crlf = fakes.package(extra={K.SYSTEM: fakes.SYSTEM_REDS.replace("\n", "\r\n").encode()})
+    sc = entries(W.build(crlf, fakes.URL, fakes.HOST, "XyberRP", "1.16.19", "patch", extras={"keys": True})[0])[K.SYSTEM]
+    check("keys: a CRLF file stays CRLF", b"\r\n" in sc and b"\n" not in sc.replace(b"\r\n", b"") and K.carries(sc))
+    # refusals: nothing is built
+    for name, extra, want in (
+            ("OnKeyInput changed", {K.SYSTEM: fakes.SYSTEM_REDS.replace("if !this.m_inSession {\n            return;",
+                                                                         "if !this.m_inSession { return;").encode()},
+             "not exactly as expected"),
+            ("no Capri.Config.reds", {K.CONFIG: b"module Capri\n"}, "Capri.Config.reds no longer has"),
+            ("her own Get renamed", {K.SYSTEM: fakes.SYSTEM_REDS.replace("public static func Get(", "public static func Of(")
+                                     .encode()}, "no longer has: public static func Get"),
+            ("a host keys edit this kit did not write", {K.SYSTEM: fakes.SYSTEM_REDS.replace(
+                "    private let m_seatKeyAt: Float;\n", "    private let m_seatKeyAt: Float;\n    // XyberRP host keys, by hand\n")
+                .encode()}, "did not write")):
+        try:
+            W.build(fakes.package(extra=extra), fakes.URL, fakes.HOST, "XyberRP", "1.16.19", "patch", extras={"keys": True})
+            check(f"keys refused: {name}", False)
+        except W.BuildError as ex:
+            check(f"keys refused: {name}", want in str(ex), str(ex))
+    # the game folder's other version of Capri.System.reds is no migration: the package's own is edited
+    game = {K.SYSTEM: b"module Capri\npublic class CapriSystem { }\n", W.STORAGE: o[W.STORAGE]}
+    d5, r5 = W.build(old, fakes.URL, fakes.HOST, "XyberRP", "1.16.19", "patch", game=game, extras={"keys": True})
+    check("keys: another version in the game folder, the package's own edited", K.unapply(entries(d5)[K.SYSTEM].decode())
+          == o[K.SYSTEM].decode() and r5["other_version_here"] == [K.SYSTEM], r5["other_version_here"])
+    # the edit on Capri 1.16's own file (when this PC has it): applies, comes out, again the same
+    real = os.environ.get("CAPRI_SYSTEM_REDS")
+    if real and os.path.isfile(real):
+        text = open(real, encoding="utf-8").read()
+        p = K.apply(text)
+        check("keys on Capri 1.16's own Capri.System.reds: in once, out again", p.count(K.BEGIN) == 1 and
+              K.unapply(p) == text.replace("\r\n", "\n") and K.apply(p) == p)
 
 
 POSE = (b"module Capri\n\nenum CapriPose {\n    Stand = 0,\n    Sit = 1\n}\n\npublic struct CapriPoseData {\n"
@@ -613,6 +678,9 @@ def test_kit_flow():
         check("publish: brain asked from here with the address", asked == [fakes.URL])
         rec = json.load(open(os.path.join(kitdir, "last-staging.json")))
         check("publish: record", rec["version"] == "1.16.16" and rec["hook"] == "patch" and rec["from"]["version"] == "1.16.15")
+        check("publish: her keys for Open77 in the record", rec.get("keys") is True, rec.get("keys"))
+        staged = entries(open(os.path.join(m.root("staging"), ".open77", "mods", rec["sha256"] + ".blob"), "rb").read())
+        check("publish: the package carries her keys for Open77", K.carries(staged[K.SYSTEM]))
         check("publish: the server names it", m.entry("staging")["sha256"] == rec["sha256"])
         check("publish: brain.url not left here", not any(f.endswith(".url") for _, _, fs in os.walk(kitdir) for f in fs))
         check("publish: log has no brain path", not any(fakes.SECRET in l for l in logs))
@@ -1379,7 +1447,7 @@ def test_masks():
 
 
 def main():
-    for t in (test_build, test_migration, test_refusals, test_voz, test_mo, test_masks, test_standalone_python,
+    for t in (test_build, test_keys, test_migration, test_refusals, test_voz, test_mo, test_masks, test_standalone_python,
               test_machine_lock, test_brain_remote, test_kit_brain, test_remote, test_one_line_site, test_kit_flow,
               test_bats):
         try:

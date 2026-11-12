@@ -561,7 +561,9 @@ def cmd_publish(a, log):
         langs = Z.languages(manifest["entries"])
 
         def extras_for(v):
-            return {"files": MO.render(role, v), "voice": {"url": voice_url, "langs": langs}}
+            # keys (2026-11-12): her five keys driven by Open77's key mappings -- ESC > Settings > KEY BINDINGS,
+            # declared by opx_infinity (core/client/caprikeys.lua) -- capri_keys.py
+            return {"files": MO.render(role, v), "voice": {"url": voice_url, "langs": langs}, "keys": True}
         if res.get("wired_same") and not a.rebuild:
             # the same build again (the live version): nothing would change -> nothing to do
             game_now = find_game(a.game)
@@ -569,8 +571,8 @@ def cmd_publish(a, log):
                 _, same = W.build(old, url, host, world, entry["version"], "patch",
                                   game=game_capri_files(game_now) if game_now else {}, extras=extras_for(entry["version"]))
                 if not same["changed"]:
-                    log(f"  {world}'s package already has the brain, her voice and Mass Override for everyone, as this "
-                        f"kit builds them: nothing to do")
+                    log(f"  {world}'s package already has the brain, her voice, Mass Override for everyone and her keys "
+                        f"from Open77's KEY BINDINGS, as this kit builds them: nothing to do")
                     return ALREADY
                 log(f"  {world}'s package has the brain wired in, but not (all of) this build: "
                     + ", ".join(posixpath.basename(n) for n in same["changed"]))
@@ -579,7 +581,8 @@ def cmd_publish(a, log):
         version = W.bump(entry["version"])
         log(f"===== 3. Capri {version} for {world}: the live {entry['version']} + Capri.ServerBrain.reds, Mass Override "
             f"for every player (its gate: {MO.BASES[role][0].split('/', 3)[-1]}), Capri Voz speaking with her voice "
-            f"from the server ({langs}), its scripts as REDscript migrates them, checked with the game's own Redscript "
+            f"from the server ({langs}), her five keys driven by Open77's key mappings (ESC > Settings > KEY "
+            f"BINDINGS, opx_infinity), its scripts as REDscript migrates them, checked with the game's own Redscript "
             f"on this PC")
         game = find_game(a.game)
         here = game_capri_files(game) if game else {}
@@ -665,7 +668,8 @@ def cmd_publish(a, log):
         record = {"role": role, "world": world, "version": version, "sha256": ares["sha256"],
                   "size": ares.get("sizeBytes"), "hook": hook, "from": entry, "at": stamp,
                   "changed": sorted(delta), "scripts_sha256": rep["scripts_sha256"], "host": host,
-                  "migrated": rep.get("migrated"), "voice": rep.get("voice"), "mass_override": MO.BASES[role][1]}
+                  "migrated": rep.get("migrated"), "voice": rep.get("voice"), "mass_override": MO.BASES[role][1],
+                  "keys": rep.get("keys")}
         with open(os.path.join(HERE, f"last-{role}.json"), "w", encoding="utf-8") as f:
             json.dump(record, f, indent=2)
         log(f"  {world} names Capri {version} now (sha256 {ares['sha256'][:16]}...); players get it from its next "

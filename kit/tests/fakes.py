@@ -93,6 +93,80 @@ def voz_fixture(edits, bom=False) -> bytes:
 
 
 PS1_FIXTURE = voz_fixture(Z.PS1_EDITS, bom=True)
+
+# Capri.System.reds and Capri.Config.reds as far as her keys go (capri_keys.py): the lines the edit leans on, and
+# OnKeyInput's first lines exactly as in Capri 1.16.
+SYSTEM_REDS = textwrap.dedent('''\
+    module Capri
+
+    public class CapriSystem extends ScriptableSystem {
+        private let m_inSession: Bool;
+        private let m_busy: Bool;
+        private let m_typing: Bool;
+        private let m_typingClosedAt: Float;
+
+        public static func Get(game: GameInstance) -> ref<CapriSystem> {
+            return GameInstance.GetScriptableSystemsContainer(game).Get(n"Capri.CapriSystem") as CapriSystem;
+        }
+
+        public func Now() -> Float {
+            return EngineTime.ToFloat(GameInstance.GetSimTime(this.GetGameInstance()));
+        }
+
+        private func Player() -> ref<PlayerPuppet> {
+            return GetPlayer(this.GetGameInstance());
+        }
+
+        private func InMenu() -> Bool {
+            return false;
+        }
+
+        private let m_seatKeyAt: Float;
+
+        private cb func OnKeyInput(event: ref<KeyInputEvent>) {
+            if !this.m_inSession {
+                return;
+            }
+            if this.m_player2.IsConnected() {
+                this.m_drive.SeatKey(this.Player());
+            }
+        }
+
+        public func OpenInput() -> Void {
+        }
+
+        public func Mark() -> Void {
+        }
+
+        public func Summon() -> Void {
+        }
+
+        public func IsListening() -> Bool {
+            return false;
+        }
+
+        public func StartListening() -> Void {
+        }
+
+        public func StopListening() -> Void {
+        }
+    }
+    ''')
+CONFIG_REDS = textwrap.dedent('''\
+    module Capri
+
+    public class CapriConfig extends ScriptableSystem {
+        public let keyType: EInputKey = EInputKey.IK_Enter;
+        public let keyMark: EInputKey = EInputKey.IK_MiddleMouse;
+        public let keyTalk: EInputKey = EInputKey.IK_CapsLock;
+        public let keySummon: EInputKey = EInputKey.IK_F7;
+        public let keySeats: EInputKey = EInputKey.IK_V;
+
+        public static func Get(game: GameInstance) -> ref<CapriConfig> {
+            return GameInstance.GetScriptableSystemsContainer(game).Get(n"Capri.CapriConfig") as CapriConfig;
+        }
+    }
+    ''')
 LINUX_FIXTURE = voz_fixture(Z.LINUX_EDITS)
 
 
@@ -108,7 +182,8 @@ def package(storage=STORAGE_REDS, extra=None, crlf=False, gate="mass-override-st
         "red4ext/plugins/CapriPersonalityConstruct/CapriVoz/voces/capri_spanish.safetensors": b"ES" * 300,
         "bin/x64/plugins/cyber_engine_tweaks/mods/CapriVozReady/init.lua": b"-- heartbeat\n",
         "r6/scripts/CapriPersonalityConstruct/Capri.Storage.reds": text.encode("utf-8"),
-        "r6/scripts/CapriPersonalityConstruct/Capri.System.reds": b"module Capri\npublic class CapriSystem {}\n",
+        "r6/scripts/CapriPersonalityConstruct/Capri.System.reds": SYSTEM_REDS.encode("utf-8"),
+        "r6/scripts/CapriPersonalityConstruct/Capri.Config.reds": CONFIG_REDS.encode("utf-8"),
         "r6/scripts/CapriPersonalityConstruct/Capri.MassOverride.reds": b"module Capri\n// the caster's own cast\n",
         "r6/scripts/CapriPersonalityConstruct/Codeware/Codeware.reds": b"module Codeware\n",
         "r6/scripts/Open77/Open77MassOverride.reds": f"// gate https://{HOST}/{gate}/\n".encode(),

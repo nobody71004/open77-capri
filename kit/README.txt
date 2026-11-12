@@ -1,6 +1,20 @@
 Capri for every player (XyberRP and XyberRP Staging): her brain, her own voice, Mass Override for everyone
 ==========================================================================================================
 
+Why Capri's keys were not in Open77's KEY BINDINGS (2026-11-12, later)
+  Capri read her five keys -- type to her (Enter), mark a target (middle mouse), talk to her (hold Caps
+  Lock), summon her (F7), switch seats while she drives (tap V) -- straight off the game's key events, set on
+  her own Settings > Mods page.  None was in ESC > Settings > KEY BINDINGS, two were already keys of XyberRP's
+  resource (F7 its appearance panel, Caps Lock its radio), and Enter on a row of its staff menu opened her
+  text box under the menu.
+  Now every package this kit builds carries one anchored edit to Capri.System.reds (capri_keys.py):
+  KeyFromHost and OnHostKey, which XyberRP's resource (opx_infinity, core/client/caprikeys.lua) calls for
+  every press of the five mappings it declares.  A player sets them in KEY BINDINGS (the setting follows them
+  to every server); their defaults are the keys her own settings name, moved to a free key where another
+  mapping already holds one.  While that resource keeps her lease (asked every 2 s, good for 6 s) her own
+  reading of the game's keys rests, so the key in KEY BINDINGS is the only one; a game nobody asks for
+  (single player, another server) has her own keys back within 6 s.
+
 Why other PCs heard a Windows voice (2026-11-12)
   Capri speaks with her real voice only on a PC that installed her local engine ("Install local
   voice": Pocket TTS and her voice files, about 900 MB) -- the laptop.  Every other PC's Capri Voz
