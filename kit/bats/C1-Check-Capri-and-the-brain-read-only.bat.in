@@ -1,0 +1,46 @@
+@echo off
+setlocal EnableExtensions
+title Capri and the server's brain, READ ONLY
+rem ---------------------------------------------------------------------------------------------
+rem   READ ONLY -- nothing changes anywhere.
+rem   On the game servers' machine: Staging's and XyberRP's Capri package (is the brain wired in?),
+rem   who is on, what the launcher hands out; the brain: where the web server serves it to players
+rem   (its secret path is never shown), the unit behind it, Ollama and its models, and the brain's
+rem   last requests -- the ones your games made.  From this PC, the way a player's game asks it: its
+rem   models and one short question, timed.  And this PC's own Capri: what she thinks with, and what
+rem   the wiring decided at her last start.
+rem   Log: kit\capri-check-*.log here.
+rem ---------------------------------------------------------------------------------------------
+set "PY=%LOCALAPPDATA%\Programs\fivem2open77\runtime\python\python.exe"
+if not exist "%PY%" goto nopython
+set "CK=%~dp0kit\capri_kit.py"
+if not exist "%CK%" goto nokit
+set "AVK="
+if exist "%~dp0..\open77-av-kit\av_kit.py" set "AVK=%~dp0..\open77-av-kit"
+if not defined AVK if exist "%USERPROFILE%\Downloads\open77-av-kit\av_kit.py" set "AVK=%USERPROFILE%\Downloads\open77-av-kit"
+if not defined AVK goto noavkit
+set "O77_AV_KIT=%AVK%"
+@@HOST@@
+
+"%PY%" -X utf8 "%CK%" check %HOST%
+set "RC=%ERRORLEVEL%"
+echo.
+echo Done (exit %RC%).  Tell Claude "done": it reads the log.
+pause
+exit /b %RC%
+
+:nopython
+echo FAILED: fivem2open77 Studio's Python is not at %PY% - is the Studio installed?
+pause
+exit /b 1
+
+:nokit
+echo FAILED: this folder's own kit (kit\capri_kit.py) is missing: unpack the whole folder again.
+pause
+exit /b 1
+
+:noavkit
+echo FAILED: the AV kit's av_kit.py was not found: not in %~dp0..\open77-av-kit, not in
+echo %USERPROFILE%\Downloads\open77-av-kit.  It signs in to the machine the way the Studio does.
+pause
+exit /b 1

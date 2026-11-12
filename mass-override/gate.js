@@ -25,6 +25,11 @@ const REASONS = {
   CANNOT_PAY: "cannot_pay",
 };
 
+// A world position a game sent: three finite numbers well inside Night City's map.
+function isPoint(p) {
+  return ["x", "y", "z"].every((k) => typeof p[k] === "number" && Number.isFinite(p[k]) && Math.abs(p[k]) < 1e6);
+}
+
 function createMassOverride(options = {}) {
   const cfg = { ...DEFAULTS, ...options };
   const cooldownUntil = new Map(); // playerId -> ms timestamp
@@ -87,7 +92,27 @@ function createMassOverride(options = {}) {
 
   // Attempt a cast. On success returns the event to broadcast and the
   // revert timer deadline. On failure returns the reason only.
-  function cast(player, candidates, now) {
+  //
+  // `origin` (from game builds that send it) is what every other client needs to run the
+  // same street: where the caster stood ({x, y, z}, world metres), the mode the caster's own
+  // game is running (so nobody runs the other one) and the caster's token for this cast (so
+  // the caster's own game skips it when the feed hands it back).
+  function cast(player, candidates, now, origin = null) {
+    // The same cast sent again: a game sends its cast once more while no answer has come (a connection
+    // that dropped, 2026-11-12), so the cast this gate already has is answered as it is -- nothing
+    // charged twice, nothing handed out twice, no recharge refusal for the caster's own retry.
+    const sentToken = origin && typeof origin.token === "string" ? origin.token : "";
+    if (sentToken) {
+      const seen = events.find((e) => e.token === sentToken && e.casterId === player.id);
+      if (seen) {
+        return {
+          ok: true,
+          duplicate: true,
+          event: { castId: seen.castId, casterId: seen.casterId, targets: [], areas: seen.areas, mode: seen.mode,
+            expiresAt: seen.expiresAt, at: seen.at, token: seen.token },
+        };
+      }
+    }
     const reason = check(player, now);
     if (reason !== REASONS.OK) return { ok: false, reason };
 
@@ -109,13 +134,30 @@ function createMassOverride(options = {}) {
     const areas = [...new Set(targets.map((t) => t.area).filter(Boolean))];
     // Picked once, before the event is built: the feed must name the same mode this
     // cast ran, and calling pickMode() twice would hand the next cast the other one.
-    const mode = pickMode();
+    // A game that says which mode it is running is taken at its word: that is what the
+    // caster's street shows, so it is what every other client must show.
+    const told = origin && (origin.mode === "blink" || origin.mode === "blackout") ? origin.mode : null;
+    const mode = told ?? pickMode();
+    const at = origin && isPoint(origin) ? { x: origin.x, y: origin.y, z: origin.z } : null;
+    const token = origin && typeof origin.token === "string" ? origin.token : "";
 
-    const event = { castId, casterId: player.id, targets, areas, mode, expiresAt };
-    events.push({ seq: nextSeq++, castId, casterId: player.id, mode, areas, expiresAt });
+    const event = { castId, casterId: player.id, targets, areas, mode, expiresAt, at, token };
+    events.push({ seq: nextSeq++, castId, casterId: player.id, mode, areas, expiresAt, castAt: now, at, token });
     if (events.length > feedLimit) events.shift();
 
     return { ok: true, event };
+  }
+
+  // The casts every client runs: those after `since` that are still on (a cast whose effect
+  // has ended is nothing to run), each with where it was cast and how long it has left.
+  // `next` is the newest seq issued, the cursor the client keeps.
+  function castsSince(since, now) {
+    const parsed = Number(since);
+    const after = Number.isFinite(parsed) ? parsed : 0;
+    const active = events
+      .filter((e) => e.seq > after && e.expiresAt > now)
+      .map((e) => ({ ...e, ageMs: Math.max(0, now - e.castAt), remainingMs: Math.max(0, e.expiresAt - now) }));
+    return { next: nextSeq - 1, events: active };
   }
 
   // Broadcast feed: the casts a client has not applied yet, oldest first, so a poller
@@ -159,6 +201,7 @@ function createMassOverride(options = {}) {
     check,
     cast,
     feedSince,
+    castsSince,
     expire,
     // A getter, not a copied field: the cursor is a primitive that changes on every
     // cast, so a plain property would keep reporting the value it had at creation.
@@ -173,8 +216,9 @@ function createMassOverride(options = {}) {
       get nextMode() {
         return nextMode;
       },
+      events,
     },
   };
 }
 
-module.exports = { createMassOverride, REASONS, DEFAULTS };
+module.exports = { createMassOverride, REASONS, DEFAULTS, isPoint };

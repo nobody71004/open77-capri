@@ -1,0 +1,50 @@
+@echo off
+setlocal EnableExtensions
+title Take the brain's per-address limits back out
+rem ---------------------------------------------------------------------------------------------
+rem   The brain's nginx site file as it was before the kit limited the brain's location per address
+rem   (limit_req, limit_conn), nginx -t, and a reload.  Refused when the file changed since.  The
+rem   Capri packages, the game servers and the brain itself stay as they are.
+rem   Log: kit\capri-guard-putback-*.log here.
+rem ---------------------------------------------------------------------------------------------
+set "PY=%LOCALAPPDATA%\Programs\fivem2open77\runtime\python\python.exe"
+if not exist "%PY%" goto nopython
+set "CK=%~dp0kit\capri_kit.py"
+if not exist "%CK%" goto nokit
+set "AVK="
+if exist "%~dp0..\open77-av-kit\av_kit.py" set "AVK=%~dp0..\open77-av-kit"
+if not defined AVK if exist "%USERPROFILE%\Downloads\open77-av-kit\av_kit.py" set "AVK=%USERPROFILE%\Downloads\open77-av-kit"
+if not defined AVK goto noavkit
+set "O77_AV_KIT=%AVK%"
+@@HOST@@
+
+echo.
+choice /C YN /M "Take the brain's per-address limits back out"
+if errorlevel 2 goto declined
+"%PY%" -X utf8 "%CK%" guard-putback %HOST%
+set "RC=%ERRORLEVEL%"
+echo.
+echo Done (exit %RC%).  Tell Claude "done".
+pause
+exit /b %RC%
+
+:declined
+echo Nothing done, nothing changed.
+pause
+exit /b 0
+
+:nopython
+echo FAILED: fivem2open77 Studio's Python is not at %PY% - is the Studio installed?
+pause
+exit /b 1
+
+:nokit
+echo FAILED: this folder's own kit (kit\capri_kit.py) is missing: unpack the whole folder again.
+pause
+exit /b 1
+
+:noavkit
+echo FAILED: the AV kit's av_kit.py was not found: not in %~dp0..\open77-av-kit, not in
+echo %USERPROFILE%\Downloads\open77-av-kit.  It signs in to the machine the way the Studio does.
+pause
+exit /b 1

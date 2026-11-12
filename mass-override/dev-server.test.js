@@ -220,3 +220,158 @@ test("a refused cast over HTTP leaves the shared beat alone", async () => {
     await srv.close();
   }
 });
+
+// ---------------------------------------------------------------------------------------------
+// Every client runs every cast (2026-11-12): sessions, positions and GET /casts.
+
+function startLogged(options = {}) {
+  const lines = [];
+  return start({ ...options, log: (l) => lines.push(l) }).then((srv) => ({ ...srv, lines }));
+}
+
+async function get(base, route) {
+  const res = await fetch(`${base}${route}`);
+  return { status: res.status, text: await res.text() };
+}
+
+test("a cast with a session needs no /players first, and keeps its own cooldown", async () => {
+  const srv = await startLogged({ cooldownMs: 40_000, cost: 25, durationMs: 30_000 });
+  try {
+    const a = await post(srv.base, "/cast", { playerId: "(EntityID 1)", session: "s111", token: "s111-1", mode: "blink", x: 10.5, y: -20.25, z: 3, candidates: candidates(2, "a") });
+    assert.equal(a.status, 200);
+    assert.equal(a.body.event.mode, "blink", "the caster's own mode is the event's");
+    assert.deepEqual(a.body.event.at, { x: 10.5, y: -20.25, z: 3 });
+    // the same entity id from another PC is another player: its own session, its own cooldown
+    const b = await post(srv.base, "/cast", { playerId: "(EntityID 1)", session: "s222", token: "s222-1", mode: "blackout", x: 0, y: 0, z: 0, candidates: [] });
+    assert.equal(b.status, 200, "another PC is not held by the first one's cooldown");
+    const again = await post(srv.base, "/cast", { playerId: "(EntityID 1)", session: "s111", token: "s111-2", mode: "blink", x: 1, y: 1, z: 1, candidates: [] });
+    assert.equal(again.status, 409);
+    assert.equal(again.body.reason, "on_cooldown");
+    assert.ok(srv.lines.some((l) => l.startsWith("[cast] seq=1 by s111 mode=blink at 10.5,-20.3,3.0 token=s111-1")), srv.lines.join("\n"));
+    assert.ok(srv.lines.some((l) => l.startsWith("[cast] refused for s111: on_cooldown")));
+  } finally {
+    await srv.close();
+  }
+});
+
+test("GET /casts hands every client the casts still on, with where they were cast", async () => {
+  const srv = await startLogged({ cooldownMs: 0, cost: 0, durationMs: 30_000 });
+  try {
+    let r = await get(srv.base, "/casts?since=0&session=s9");
+    assert.equal(r.status, 200);
+    assert.equal(r.text, "0", "nothing cast yet: only the cursor");
+    await post(srv.base, "/cast", { playerId: "x", session: "s1", token: "s1-1", mode: "blackout", x: -1234.56, y: 789.01, z: 22.5, candidates: [] });
+    srv.advance(5_000);
+    r = await get(srv.base, "/casts?since=0&session=s9");
+    const [next, line] = r.text.split("\n");
+    assert.equal(next, "1");
+    assert.equal(line, "1 blackout -123456 78901 2250 5000 25000 s1-1");
+    // caught up: the cursor alone
+    assert.equal((await get(srv.base, "/casts?since=1&session=s9")).text, "1");
+    // a cast that has ended is not handed out any more
+    srv.advance(26_000);
+    assert.equal((await get(srv.base, "/casts?since=0&session=s9")).text, "1");
+    assert.ok(srv.lines.some((l) => l.startsWith("[feed] new client s9 polling (1 polling)")), srv.lines.join("\n"));
+  } finally {
+    await srv.close();
+  }
+});
+
+test("a cast from an older build (no session, no position) is still handed out, marked nopos", async () => {
+  const srv = await startLogged({ cooldownMs: 0, cost: 0, durationMs: 30_000 });
+  try {
+    await post(srv.base, "/players", { id: "(EntityID 1)", ownsCapri: true, capriSummoned: true, balance: 100 });
+    const old = await post(srv.base, "/cast", { playerId: "(EntityID 1)", candidates: candidates(1, "o") });
+    assert.equal(old.status, 200);
+    assert.equal(old.body.event.mode, "blackout", "an older build still gets the gate's own beat");
+    const r = await get(srv.base, "/casts?since=0");
+    assert.equal(r.text.split("\n")[1], "1 blackout 0 0 0 0 30000 nopos");
+    // the old feed still answers the way builds up to 1.16.16 read it
+    assert.equal((await get(srv.base, "/feed?since=0")).text, "1 blackout");
+  } finally {
+    await srv.close();
+  }
+});
+
+test("a bad token or a position out of the map is not passed on", async () => {
+  const srv = await startLogged({ cooldownMs: 0, cost: 0, durationMs: 30_000 });
+  try {
+    const r = await post(srv.base, "/cast", { session: "s5", token: "bad token!", mode: "sideways", x: 1e9, y: 0, z: 0, candidates: [] });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.event.at, null);
+    assert.equal(r.body.event.token, "");
+    assert.ok(["blink", "blackout"].includes(r.body.event.mode));
+    assert.equal((await get(srv.base, "/casts?since=0")).text.split("\n")[1].split(" ").slice(-1)[0], "nopos");
+  } finally {
+    await srv.close();
+  }
+});
+
+test("/state names the clients polling and the recent casts", async () => {
+  const srv = await startLogged({ cooldownMs: 0, cost: 0, durationMs: 30_000 });
+  try {
+    await get(srv.base, "/casts?since=0&session=sA");
+    await get(srv.base, "/casts?since=0&session=sB");
+    await post(srv.base, "/cast", { session: "sA", token: "sA-1", mode: "blink", x: 1, y: 2, z: 3, candidates: [] });
+    const res = await fetch(`${srv.base}/state`);
+    const s = await res.json();
+    assert.equal(s.polling, 2);
+    assert.deepEqual(Object.keys(s.pollers).sort(), ["sA", "sB"]);
+    assert.equal(s.recent.length, 1);
+    assert.deepEqual(s.recent[0].at, [1, 2, 3]);
+    assert.equal(s.stats.casts, 1);
+  } finally {
+    await srv.close();
+  }
+});
+
+test("the same cast sent again (its first try got no answer) is answered with the cast on, never run twice", async () => {
+  const lines = [];
+  const srv = await start({ log: (l) => lines.push(l) });
+  try {
+    const cast = { session: "s111111222222", token: "s111111222222-1", mode: "blink", x: -686.3, y: 1151.7, z: 28.6,
+      candidates: candidates(4, "c") };
+    const first = await post(srv.base, "/cast", cast);
+    assert.equal(first.status, 200);
+    srv.advance(3000);
+    // the second try: same token -- inside the caster's recharge, still answered as the cast it is
+    const again = await post(srv.base, "/cast", cast);
+    assert.equal(again.status, 200);
+    assert.equal(again.body.duplicate, true);
+    assert.equal(again.body.event.castId, first.body.event.castId);
+    assert.equal(again.body.event.mode, "blink");
+    // handed out once
+    const feed = await (await fetch(`${srv.base}/casts?since=0&session=s999`)).text();
+    assert.equal(feed.trim().split("\n").length, 2, feed);
+    const state = await (await fetch(`${srv.base}/state`)).json();
+    assert.equal(state.stats.casts, 1);
+    assert.equal(state.stats.again, 1);
+    assert.equal(state.balances.s111111222222, 75, "charged once");
+    assert.ok(lines.some((l) => /^\[cast\] again from s111111222222 token=s111111222222-1: seq=1 is on already/.test(l)), lines.join("\n"));
+    // a NEW cast inside the recharge is still refused
+    const next = await post(srv.base, "/cast", { ...cast, token: "s111111222222-2" });
+    assert.equal(next.status, 409);
+    assert.equal(next.body.reason, "on_cooldown");
+    // another game's cast with the same token text is its own cast
+    const other = await post(srv.base, "/cast", { ...cast, session: "s333333444444" });
+    assert.equal(other.status, 200);
+    assert.equal(other.body.duplicate, undefined);
+  } finally {
+    await srv.close();
+  }
+});
+
+test("a request the gate cannot read is answered 400 and said in its log", async () => {
+  const lines = [];
+  const srv = await start({ log: (l) => lines.push(l) });
+  try {
+    const res = await fetch(`${srv.base}/cast`, { method: "POST", headers: { "content-type": "application/json" },
+      body: '{"session":"s1","candidates":[{"id":"a\\q"}]}' });
+    assert.equal(res.status, 400);
+    assert.ok(lines.some((l) => /^\[http\] POST \/cast -> 400: /.test(l)), lines.join("\n"));
+    const state = await (await fetch(`${srv.base}/state`)).json();
+    assert.equal(state.stats.bad, 1);
+  } finally {
+    await srv.close();
+  }
+});

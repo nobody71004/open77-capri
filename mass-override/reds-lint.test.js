@@ -44,12 +44,40 @@ test("both HTTP reply handlers are declared cb", () => {
 test("both HTTP objects keep themselves alive while a request is in flight", () => {
   const text = fs.readFileSync(path.join(ROOT, "Open77", "Open77MassOverride.reds"), "utf8");
   const rearm = text.match(/DelayCallback\(this,/g) || [];
-  assert.equal(rearm.length, 2, "the feed poll and the cast post must each re-arm themselves");
-  assert.ok(
-    /DelayCallback\(this,[\s\S]{0,120}AsyncHttpClient\.Get/.test(text),
-    "the poll must be armed before its request",
-  );
+  assert.equal(rearm.length, 3, "the feed poll, the cast post and the cast's sender must each re-arm themselves");
+  // the poll re-arms at the top of every Call, before any early return and before its request
+  const poll = text.slice(text.indexOf("public class MassOverrideFeedPoll"), text.indexOf("public class MassOverrideRemote"));
+  const call = poll.slice(poll.indexOf("public func Call()"), poll.indexOf("private cb func OnReply"));
+  assert.ok(call.indexOf("DelayCallback(this,") > 0, "the poll re-arms itself");
+  assert.ok(call.indexOf("DelayCallback(this,") < call.indexOf("AsyncHttpClient.Get"), "the poll must be armed before its request");
+  assert.ok(call.indexOf("DelayCallback(this,") < call.indexOf("if this.inFlight"), "armed before the in-flight guard returns");
+  assert.ok(/if now - this\.sentAt < MassOverrideFeed\.StuckSeconds\(\) \{ return; \}/.test(call), "a request still out is not doubled");
+  assert.ok(/private cb func OnReply/.test(poll), "the poll's reply handler is a cb");
   assert.ok(/if this\.keepAlive \{/.test(text), "the cast keep-alive firing must not re-arm");
+});
+
+// 2026-11-12: a cast whose one request was lost (a dropped connection) ran on the caster's screen only.
+// The cast is now sent again until the gate answers; the sender stays scheduled (so the replies of its
+// tries have a live object to land on) and goes no further once answered or out of tries.
+test("a cast is sent again until the gate answers, and never forever", () => {
+  const text = fs.readFileSync(path.join(ROOT, "Open77", "Open77MassOverride.reds"), "utf8");
+  const send = text.slice(text.indexOf("public class MassOverrideCastSend"), text.indexOf("public class MassOverrideDiag"));
+  assert.ok(send.length > 500, "MassOverrideCastSend is declared before MassOverrideDiag");
+  const call = send.slice(send.indexOf("public func Call()"), send.indexOf("private func Post("));
+  assert.ok(call.indexOf("if this.answered { return; }") >= 0, "nothing once answered");
+  assert.ok(call.indexOf("MaxAttempts()") > 0 && call.indexOf("GiveUpSeconds()") > 0, "it gives up");
+  assert.ok(call.indexOf("DelayCallback(this,") > 0 && call.indexOf("DelayCallback(this,") < call.indexOf("this.Post("),
+    "re-armed before its try goes out");
+  assert.ok(/post\.send = this;/.test(send), "each try reports back to its sender");
+  const answered = send.slice(send.indexOf("public func Answered("));
+  assert.ok(/status == 200[\s\S]*this\.answered = true;/.test(answered), "a 200 ends it");
+  assert.ok(/status == 409[\s\S]*this\.answered = true;/.test(answered), "a refusal ends it");
+  const post = text.slice(text.indexOf("public class MassOverrideCastPost"), text.indexOf("public class MassOverrideCastSend"));
+  assert.ok(/if IsDefined\(this\.send\) \{\s*this\.send\.Answered\(this\.attempt, response, this\.isRegister\);/.test(post),
+    "a try's reply goes to its sender");
+  const capri = fs.readFileSync(path.join(ROOT, "CapriPersonalityConstruct", "Capri.MassOverride.reds"), "utf8");
+  assert.ok(/MassOverrideCastSend\.Start\(game, MassOverrideCastPost\.Body\(/.test(capri), "Capri's cast uses the sender");
+  assert.ok(!/MassOverrideCastPost\.Register\(/.test(capri), "no one-shot register-then-cast any more");
 });
 
 test("every class the two files use is declared in one of them", () => {
@@ -64,6 +92,7 @@ test("every class the two files use is declared in one of them", () => {
     "MassOverrideCache",
     "MassOverridePrefs",
     "MassOverrideDiag",
+    "MassOverrideCastSend",
     "MassOverrideProbe",
     "MassOverrideEffects",
     "MassOverridePulse",

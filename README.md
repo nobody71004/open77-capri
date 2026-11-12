@@ -42,6 +42,10 @@ database, credentials, or third-party mod binaries.
   an Open77 `requiredMods` package the launcher installs on connect. See
   [docs/LAUNCHER_MOD.md](docs/LAUNCHER_MOD.md).
 - **Install, verification, rollback and troubleshooting docs.**
+- **Server-brain kit** — adds `Capri.ServerBrain.reds` to a server's Capri
+  package so every player's Capri thinks with the brain on the server's machine
+  from the game's start (no Player2 app, no key), checked with the game's own
+  Redscript compiler before it is published. See [kit/README.md](kit/README.md).
 - **Optional client tooling** — CapriVoz/OmniVoice example, admin-only CET
   control bridge, and a local OpenAI-compatible Capri brain server. None of it is
   required for a server to sell the chip, and the launcher package does not ship

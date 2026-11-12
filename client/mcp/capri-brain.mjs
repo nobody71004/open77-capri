@@ -50,6 +50,8 @@ const KEEP_ALIVE = process.env.CAPRI_BRAIN_KEEP_ALIVE || '30m';
 // many of the newest messages as fit in this many characters (the newest message always stays).
 const MAX_PROMPT_CHARS = clampInt(process.env.CAPRI_BRAIN_MAX_PROMPT_CHARS || 6_000, 1_000, 200_000);
 const STARTED_AT = Date.now();
+// This file's build, in /health and in the start line: what the Capri kit checks after it updates the brain.
+const BRAIN_BUILD = '2026-11-12.1 (Mass Override however it is typed)';
 
 function clampInt(value, min, max) {
   const number = Number(value);
@@ -187,6 +189,7 @@ async function health() {
   return {
     ok: true,
     service: 'capri-brain',
+    build: BRAIN_BUILD,
     backend: BACKEND,
     backendUrl: BACKEND_URL,
     backendOk: models.ok,
@@ -269,7 +272,10 @@ async function chat(req, res) {
   }
 
   const raw = await upstream.text();
-  console.error(`[capri-brain] chat messages=${trimmed.length}/${messages.length} chars=${chars} max_tokens=${payload[TOKEN_PARAM]} status=${upstream.status} ms=${Date.now() - startedAt}`);
+  // mo=: whether the model's own reply asks for a Mass Override (the shortcut did not fire for this request), so a
+  // request that "did nothing" in game can be told apart from one the game did not run.
+  const mo = !MO_SHORTCUT || !clientKnowsMassOverride(messages) ? 'off' : /\\?"mass_override\\?"/.test(raw) ? 'model' : 'no';
+  console.error(`[capri-brain] chat messages=${trimmed.length}/${messages.length} chars=${chars} max_tokens=${payload[TOKEN_PARAM]} status=${upstream.status} ms=${Date.now() - startedAt} mo=${mo}`);
   if (!upstream.ok) {
     sendJson(res, upstream.status >= 400 ? upstream.status : 502, {
       error: {
@@ -303,8 +309,20 @@ async function chat(req, res) {
 // not JSON at all is replaced whole. The game still runs the cast and the server gate still
 // decides every outcome.
 const MO_SHORTCUT = process.env.CAPRI_BRAIN_MO_SHORTCUT !== '0';
-const MASS_OVERRIDE_REQUEST =
-  /change everything around me|mass[\s-]*override|everything around me[^.!?]*(lights|screens|cars)|(lights|screens|cars)[^.!?]*(go out|turn hostile)/i;
+// "Mass Override" however it is typed: one word or two or three ("mass over ride", the way the owner types it --
+// on 2026-11-12 that went to the model, which answered with banter and no action, so nothing happened on that PC),
+// with a hyphen or an underscore, and the usual slips (mas, overide, overrride, ovverride, overrid). Never
+// "massive", "the mass of", "over there", "overdrive", "overriding".
+const MASS_OVERRIDE_WORDS = /\bmas+[\s_-]*o+v+e*r+[\s_-]*r*i+d+e*\b/i;
+const MASS_OVERRIDE_REQUEST = new RegExp(
+  [
+    'change everything around me',
+    MASS_OVERRIDE_WORDS.source,
+    'everything around me[^.!?]*(lights|screens|cars)',
+    '(lights|screens|cars)[^.!?]*(go out|turn hostile)',
+  ].join('|'),
+  'i',
+);
 const MASS_OVERRIDE_MODE = /\b(blink|blackout|auto|alternate)\b/i;
 
 // What V said this turn. The game sends it either as the last user message or, when it
@@ -442,7 +460,7 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, HOST, () => {
   console.log(
-    `[capri-brain] listening on http://${HOST}:${PORT} backend=${BACKEND} model=${MODEL} vision=${VISION}`,
+    `[capri-brain] build ${BRAIN_BUILD} listening on http://${HOST}:${PORT} backend=${BACKEND} model=${MODEL} vision=${VISION}`,
   );
   if (BACKEND === 'freebuff' && !API_KEY) {
     console.log('[capri-brain] freebuff selected but no OPENAI_API_KEY is set');

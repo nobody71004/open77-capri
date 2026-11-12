@@ -45,6 +45,13 @@ and sizes in `server.jsonc` and `open77.lua`.
 
 ## Capri is visible but does not talk
 
+- **"I'm here, V, but disconnected"** on a player's PC: she is on Player2, her
+  default, because the package does not say where the server's brain is. The
+  launcher cannot ship `settings.json`; a package built with the server-brain kit
+  ([kit/README.md](../kit/README.md)) carries `Capri.ServerBrain.reds`, which points
+  her at the brain nginx serves on the server's machine when the game starts.
+  Its decision is in `r6/storages/CapriConstruct/server_brain.json` on that PC;
+  RedHttpClient's log (`red4ext/logs/redhttpclient-*.log`) shows her requests.
 - She needs a provider. The player package has no CET Connection tab; configure
   it on the admin machine through `CapriMcpBridge` or the separately installed
   official CET window, then check the resulting

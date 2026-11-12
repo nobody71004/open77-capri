@@ -2,6 +2,19 @@ import RedHttpClient.*
 
 // Mass Override: the probe sweep, the per-area cache and the effects.
 //
+// EVERY CLIENT RUNS EVERY CAST (1.16.17). Up to 1.16.16 a cast showed on the caster's screen
+// alone: the feed poller only started on a game after that game had cast once, it only carried
+// the mode for that game's NEXT cast, and every game registered with the gate under its V's
+// entity id -- the same on every PC -- so one player's recharge held everyone's cast at the gate.
+// Now each game polls its gate from the moment its session starts (MassOverrideRegistry.OnAttach,
+// MassOverrideFeed), under an id of its own (MassOverridePrefs.Session); a cast carries where the
+// caster stood, the mode the caster's game runs and a token; and every other game runs it
+// (MassOverrideRemote): the city's lights and the billboards for everyone in the session, the
+// street around the cast -- machines, lights, cars, the crowd's panic -- within StreetReach() of
+// it, for the time the cast has left. Nobody is turned on a V who did not cast, and nothing is
+// charged. One run is on screen at a time (MassOverrideRevert.EndActive): the next cast, here or
+// anyone's, first puts the street back as it was.
+//
 // WHAT THE STREET SHOWS (1.16.15). Two 1.16.14 casts in Japantown did what they
 // reported -- 21 machines glitching, 42 lights switching, 4 cars floored, horns -- and
 // the street still looked the same, because what makes it bright is not devices: the
@@ -181,7 +194,9 @@ public class MassOverrideLog {
     if !IsDefined(prefs) { return; }
     let lines: array<String> = prefs.TakeLog();
     if ArraySize(lines) == 0 { return; }
+    // playerId is V's entity id -- the same on every PC -- so the session says which game this is
     let body: String = "{\"phase\":\"log\",\"playerId\":" + MassOverrideLog.Quote(playerId)
+      + ",\"session\":" + MassOverrideLog.Quote(prefs.Session())
       + ",\"build\":\"" + MassOverrideBuild.Version() + "\""
       + ",\"at\":" + MassOverrideLog.Quote(at)
       + ",\"lines\":[";
@@ -236,6 +251,14 @@ public class MassOverridePrefs extends ScriptableService {
   private let m_casts: Int32;           // casts charged so far; 0 means none yet
   private let m_lastFromServer: Bool;   // the last Mode() came from a broadcast, not the cursor
   private let m_feedRunning: Bool;      // the feed poller is already running this session
+  private let m_feedGen: Int32;         // the poller in charge: a new game session starts a new one, older ones end
+  private let m_session: String;        // this running game's own id at the gate, made once: every PC's V has the
+                                        // same entity id, so that id alone made every player one player there
+  private let m_tokens: Int32;          // tokens handed out, one per cast this game sent
+  private let m_ownTokens: array<String>; // the casts this game sent: the feed hands them back, not run twice
+  private let m_active: ref<MassOverrideRevert>; // the run on screen now, this game's or another player's
+  private let m_activeIds: Int32;       // runs put on screen so far (each revert's id)
+  private let m_remoteRuns: Int32;      // other players' casts run here
   private let m_warnedMissing: Bool; // the one-time "service missing" line was printed
   private let m_log: array<String>;  // step log lines not yet sent (MassOverrideLog)
   private let m_logDropped: Int32;   // lines dropped since the last flush, buffer full
@@ -255,6 +278,48 @@ public class MassOverridePrefs extends ScriptableService {
   // The feed poller owns its own lifetime, so it must only be started once.
   public func FeedRunning() -> Bool { return this.m_feedRunning; }
   public func MarkFeedRunning() -> Void { this.m_feedRunning = true; }
+
+  // The poller in charge; a new one (a new game session) makes the one before it stop at its next tick.
+  public func FeedGen() -> Int32 { return this.m_feedGen; }
+  public func NextFeedGen() -> Int32 {
+    this.m_feedGen += 1;
+    this.m_feedRunning = true;
+    return this.m_feedGen;
+  }
+
+  // This running game's id at the gate: random, made at its first use, kept for the game's life.
+  public func Session() -> String {
+    if StrLen(this.m_session) == 0 {
+      this.m_session = "s" + ToString(RandRange(100000, 999999)) + ToString(RandRange(100000, 999999));
+    }
+    return this.m_session;
+  }
+
+  // The token of the next cast this game sends, remembered (the last 16) so the feed's copy is not run here.
+  public func NewToken() -> String {
+    this.m_tokens += 1;
+    let token: String = this.Session() + "-" + ToString(this.m_tokens);
+    ArrayPush(this.m_ownTokens, token);
+    if ArraySize(this.m_ownTokens) > 16 {
+      ArrayErase(this.m_ownTokens, 0);
+    }
+    return token;
+  }
+
+  public func IsOwnToken(token: String) -> Bool { return ArrayContains(this.m_ownTokens, token); }
+
+  // The run on screen (MassOverrideRevert.EndActive puts it back before the next one starts).
+  public func Active() -> ref<MassOverrideRevert> { return this.m_active; }
+  public func SetActive(revert: ref<MassOverrideRevert>) -> Int32 {
+    this.m_activeIds += 1;
+    this.m_active = revert;
+    return this.m_activeIds;
+  }
+
+  public func CountRemote() -> Int32 {
+    this.m_remoteRuns += 1;
+    return this.m_remoteRuns;
+  }
 
   public func Mode() -> Int32 {
     let served: Int32 = this.TakeServerMode();
@@ -352,92 +417,413 @@ public class MassOverridePrefs extends ScriptableService {
   }
 }
 
-// Broadcast feed poller. Polls the staging feed over HTTPS (RedHttpClient only sends
-// to HTTPS) and hands each new broadcast mode to MassOverridePrefs. The feed replies
-// "<seq> <mode>" or "<seq> none". Each poll asks only for casts after the cursor, so
-// a broadcast is applied once. Start() does nothing until a feed URL is set, and the
-// cast log says feed=unwired; every cast then runs on its local mode.
+// THE FEED. Every game polls its gate's GET /casts from the start of its session (one poller per
+// session: MassOverrideRegistry.OnAttach starts it, a cast makes sure there is one) and runs every
+// cast that is still on, the caster's own excepted (its token). The gate answers in plain text --
+// no JSON parser in reach here: "<next>", then one line per cast still on, "<seq> <mode> <x cm>
+// <y cm> <z cm> <age ms> <ms left> <token>" (whole numbers: StringToInt reads them).
 public class MassOverrideFeed {
-  // Empty until the staging feed is wired on: with no URL the poller never starts.
-  public static func Url() -> String { return "https://xyberrp.duckdns.org/mass-override-staging/feed"; }
-  public static func Interval() -> Float { return 3.0; }
+  // The gate this package talks to; the kit puts XyberRP's own in XyberRP's package.
+  public static func Base() -> String { return "https://xyberrp.duckdns.org/mass-override-staging"; }
+  public static func Url() -> String { return MassOverrideFeed.Base() + "/feed"; }
+  public static func CastsUrl() -> String { return MassOverrideFeed.Base() + "/casts"; }
+  // One poll every two seconds: another player's cast shows here within about that.
+  public static func Interval() -> Float { return 2.0; }
+  // A request that never came back is given up after this long, and the next one goes out.
+  public static func StuckSeconds() -> Float { return 20.0; }
+  // How near a cast this game runs its street as well (machines, lights, cars, the crowd). Farther
+  // off only the city's lights and the billboards change: on the caster's screen those are the
+  // whole city's too.
+  public static func StreetReach() -> Float { return 150.0; }
+  // False: a cast farther off than StreetReach() is not shown here at all.
+  public static func CityWide() -> Bool { return true; }
+  // A cast with less than this left is not started here.
+  public static func MinSeconds() -> Float { return 2.0; }
+  public static func Label() -> String { return "staging"; }
 
-  // One poller per session. Start() runs on every cast, and the poller now owns its
-  // own lifetime, so a second one would double every request.
-  public static func Start(game: GameInstance) -> Void {
+  // A poller for this game session; the one before it (an earlier session's) ends at its next tick.
+  public static func Start(game: GameInstance, why: String) -> Void {
     let prefs: ref<MassOverridePrefs> = MassOverridePrefs.Get();
-    if IsDefined(prefs) {
-      if prefs.FeedRunning() { return; }
-      prefs.MarkFeedRunning();
+    if !IsDefined(prefs) {
+      FTLog("[MassOverride] feed not started (" + why + "): the prefs service is missing");
+      return;
     }
     let poll: ref<MassOverrideFeedPoll> = new MassOverrideFeedPoll();
     poll.game = game;
-    poll.since = 0;
-    GameInstance.GetDelaySystem(game).DelayCallback(poll, MassOverrideFeed.Interval(), false);
+    poll.gen = prefs.NextFeedGen();
+    poll.since = -1;
+    GameInstance.GetDelaySystem(game).DelayCallback(poll, 1.0, false);
+    MassOverrideLog.Write("feed started (" + why + ") gen=" + ToString(poll.gen) + " session=" + prefs.Session()
+      + " gate=" + MassOverrideFeed.Label() + " every " + ToString(MassOverrideFeed.Interval()) + " s");
   }
 
-  // Hands a broadcast mode to the prefs service, which holds it for the next cast.
+  // A cast makes sure one runs (a session the registry started none for).
+  public static func Ensure(game: GameInstance) -> Void {
+    let prefs: ref<MassOverridePrefs> = MassOverridePrefs.Get();
+    if IsDefined(prefs) && prefs.FeedGen() == 0 {
+      MassOverrideFeed.Start(game, "cast");
+    }
+  }
+
+  // A mode the server named, for this game's next cast (kept for CapriMassOverride.ReceiveServerMode).
   public static func Apply(game: GameInstance, mode: Int32) -> Void {
     let prefs: ref<MassOverridePrefs> = MassOverridePrefs.Get();
     if IsDefined(prefs) { prefs.ReceiveServerMode(mode); }
   }
 
-  public static func Label() -> String { return "staging"; }
-}
-
-// One poll of the feed.
-//
-// The response is delivered by name to `this`, and HttpCallback keeps only a WEAK
-// reference to it. A delay callback created for one shot is destroyed the moment
-// its Call() returns, so the reply arrives with nothing left to invoke -- which is
-// exactly what happened: the request went out, the server answered 200, and neither
-// the handler nor the next poll ever ran (one feed line per session in the HTTP
-// log). Re-arming the SAME object before the request leaves the delay system holding
-// it, so it is still alive when the answer lands. That is the same mechanism that
-// keeps the effect pulses alive.
-public class MassOverrideFeedPoll extends DelayCallback {
-  public let game: GameInstance;
-  public let since: Int32;
-
-  public func Call() -> Void {
-    // Re-arm first: this keeps a strong reference alive across the request.
-    GameInstance.GetDelaySystem(this.game).DelayCallback(this, MassOverrideFeed.Interval(), false);
-    let callback: HttpCallback = HttpCallback.Create(this, n"OnReply");
-    AsyncHttpClient.Get(callback, MassOverrideFeed.Url() + "?since=" + ToString(this.since), []);
-  }
-
-  // `cb` is required as well: RedHttpClient only invokes a method marked as a
-  // callback. Both were missing, so the reply was dropped twice over.
-  private cb func OnReply(response: ref<HttpResponse>) -> Void {
-    let next: Int32 = this.since;
-    if IsDefined(response) && response.GetStatusCode() == 200 {
-      let fields: array<String> = StrSplit(response.GetText(), " ");
-      if ArraySize(fields) == 2 {
-        let seq: Int32 = StringToInt(fields[0]);
-        let word: String = fields[1];
-        if seq > this.since {
-          next = seq;
-          if word == "blink" { MassOverrideFeed.Apply(this.game, MassOverrideMode.Blink()); }
-          if word == "blackout" { MassOverrideFeed.Apply(this.game, MassOverrideMode.Blackout()); }
+  // One answer of GET /casts. The first answer of a session runs what is still on (a player who
+  // arrives during a blackout sees the rest of it); after that the cursor keeps every cast to once.
+  public static func Handle(game: GameInstance, text: String, poll: ref<MassOverrideFeedPoll>) -> Void {
+    let lines: array<String> = StrSplit(text, "\n");
+    if ArraySize(lines) == 0 { return; }
+    let next: Int32 = StringToInt(lines[0]);
+    let joining: Bool = poll.since < 0;
+    let prefs: ref<MassOverridePrefs> = MassOverridePrefs.Get();
+    let i: Int32 = 1;
+    while i < ArraySize(lines) {
+      let f: array<String> = StrSplit(lines[i], " ");
+      if ArraySize(f) == 8 {
+        let seq: Int32 = StringToInt(f[0]);
+        let token: String = f[7];
+        let left: Float = Cast<Float>(StringToInt(f[6])) / 1000.0;
+        if seq > poll.since {
+          if IsDefined(prefs) && prefs.IsOwnToken(token) {
+            MassOverrideLog.Write("feed seq=" + ToString(seq) + ": this game's own cast, already on screen");
+          } else {
+            if left < MassOverrideFeed.MinSeconds() {
+              MassOverrideLog.Write("feed seq=" + ToString(seq) + ": " + ToString(RoundF(left)) + " s left, not started here");
+            } else {
+              let origin: Vector4;
+              origin.X = Cast<Float>(StringToInt(f[2])) / 100.0;
+              origin.Y = Cast<Float>(StringToInt(f[3])) / 100.0;
+              origin.Z = Cast<Float>(StringToInt(f[4])) / 100.0;
+              origin.W = 1.0;
+              let mode: Int32 = MassOverrideMode.Blink();
+              if Equals(f[1], "blackout") {
+                mode = MassOverrideMode.Blackout();
+              }
+              MassOverrideRemote.Run(game, origin, !Equals(token, "nopos"), mode, left, seq, joining);
+            }
+          }
+        }
+      } else {
+        if StrLen(lines[i]) > 0 {
+          MassOverrideLog.Write("feed: a line not understood (" + ToString(ArraySize(f)) + " fields)");
         }
       }
+      i += 1;
     }
-    // Only when something changed, or the endpoint stopped answering: a line per
-    // poll would be one every three seconds for the whole session.
-    if !IsDefined(response) {
-      MassOverrideLog.Write("feed unreachable since=" + ToString(this.since));
-    } else if next != this.since {
-      MassOverrideLog.Write("feed applied seq=" + ToString(next) + " from=" + ToString(this.since));
+    if next > poll.since {
+      poll.since = next;
     }
-    // The poll is already armed (Call re-arms before every request); carrying the
-    // cursor on this object is what makes the next request ask for newer casts.
-    this.since = next;
   }
 }
 
-// Sends one cast to the staging gate. The server decides the targets, the cost, the
-// cooldown and the mode; on a refusal it replies 409 and the cast is not applied. The
-// local cast keeps running on its own, so an unreachable server never blocks V.
+// One poller per game session, re-armed every Interval(). The delay system holding it is what keeps
+// it alive while a request is out: RedHttpClient keeps only a WEAK reference to the callback's target
+// and invokes it by name, and only a `cb` method (1.16.12: a one-shot callback died before its reply
+// landed). A request still out is not doubled; one out longer than StuckSeconds() is given up.
+public class MassOverrideFeedPoll extends DelayCallback {
+  public let game: GameInstance;
+  public let gen: Int32;
+  public let since: Int32;      // -1 until the first answer of the session
+  public let inFlight: Bool;
+  public let sentAt: Float;
+  public let polls: Int32;
+  public let failures: Int32;
+
+  public func Call() -> Void {
+    let prefs: ref<MassOverridePrefs> = MassOverridePrefs.Get();
+    if IsDefined(prefs) && prefs.FeedGen() != this.gen {
+      MassOverrideLog.Write("feed gen=" + ToString(this.gen) + " stops: gen=" + ToString(prefs.FeedGen()) + " took over");
+      return;
+    }
+    GameInstance.GetDelaySystem(this.game).DelayCallback(this, MassOverrideFeed.Interval(), false);
+    let now: Float = EngineTime.ToFloat(GameInstance.GetSimTime(this.game));
+    if this.inFlight {
+      if now - this.sentAt < MassOverrideFeed.StuckSeconds() { return; }
+      MassOverrideLog.Write("feed: no answer in " + ToString(RoundF(now - this.sentAt)) + " s, asking again");
+    }
+    // in the menu, or while V loads: nothing to run a cast on yet
+    let player: ref<PlayerPuppet> = GetPlayer(this.game);
+    if !IsDefined(player) { return; }
+    let session: String = "none";
+    if IsDefined(prefs) {
+      session = prefs.Session();
+    }
+    this.inFlight = true;
+    this.sentAt = now;
+    this.polls += 1;
+    let callback: HttpCallback = HttpCallback.Create(this, n"OnReply");
+    AsyncHttpClient.Get(callback, MassOverrideFeed.CastsUrl() + "?since=" + ToString(this.since) + "&session=" + session, []);
+  }
+
+  private cb func OnReply(response: ref<HttpResponse>) -> Void {
+    this.inFlight = false;
+    let status: Int32 = -1;
+    if IsDefined(response) {
+      status = response.GetStatusCode();
+    }
+    if status != 200 {
+      this.failures += 1;
+      // the first one, then one line every thirty (about a minute)
+      let rounds: Int32 = this.failures / 30;
+      if this.failures == 1 || this.failures - rounds * 30 == 0 {
+        MassOverrideLog.Write("feed: the gate did not answer (status " + ToString(status) + "), " + ToString(this.failures) + " time(s) in a row");
+      }
+      return;
+    }
+    if this.failures > 0 {
+      MassOverrideLog.Write("feed: the gate answers again after " + ToString(this.failures) + " failed poll(s)");
+      this.failures = 0;
+    }
+    if this.since < 0 {
+      MassOverrideLog.Write("feed: the gate's first answer (poll " + ToString(this.polls) + ")");
+    }
+    MassOverrideFeed.Handle(this.game, response.GetText(), this);
+  }
+}
+
+// ANOTHER PLAYER'S CAST, run here: what the caster's own game does, from where the caster stood,
+// for the time it has left -- without the RAM, the recharge, the gate, or anybody turned on this V.
+public class MassOverrideRemote {
+  public static func Cap() -> Int32 { return 1000; }
+
+  public static func Run(game: GameInstance, origin: Vector4, placed: Bool, mode: Int32, seconds: Float, seq: Int32, joining: Bool) -> Void {
+    let player: ref<PlayerPuppet> = GetPlayer(game);
+    if !IsDefined(player) {
+      MassOverrideLog.Write("remote seq=" + ToString(seq) + ": no V here yet, not run");
+      return;
+    }
+    let prefs: ref<MassOverridePrefs> = MassOverridePrefs.Get();
+    let away: Float = -1.0;
+    if placed {
+      away = Vector4.Distance(player.GetWorldPosition(), origin);
+    }
+    let street: Bool = placed && away <= MassOverrideFeed.StreetReach();
+    if !street && !MassOverrideFeed.CityWide() {
+      MassOverrideLog.Write("remote seq=" + ToString(seq) + ": " + ToString(RoundF(away)) + " m away, not shown here");
+      return;
+    }
+    let blackout: Bool = mode == MassOverrideMode.Blackout();
+    MassOverrideRevert.EndActive(game, "another player's cast seq=" + ToString(seq));
+    let n: Int32 = 0;
+    let session: String = "none";
+    if IsDefined(prefs) {
+      n = prefs.CountRemote();
+      session = prefs.Session();
+    }
+    let stats: ref<MassOverrideStats> = new MassOverrideStats();
+    stats.nearestCut = -1.0;
+    stats.nearestHack = -1.0;
+    let run: ref<MassOverrideRun> = MassOverrideRun.Start(game, seconds);
+    run.remote = true;
+    run.seq = seq;
+    run.farOff = !street;
+    let targets: array<ref<MassOverrideTarget>>;
+    if street {
+      targets = MassOverrideRemote.Collect(player, origin, away, stats);
+      MassOverrideApply.Targets(game, player, targets, run, stats, blackout, false);
+      // the crowd around this V panics the way the caster's does
+      stats.terror += MassOverridePeople.Panic(player);
+    }
+    stats.cityBefore = MassOverrideCity.StateName(game);
+    if blackout {
+      stats.cityForced = MassOverrideCity.Dark(game);
+    } else {
+      stats.cityForced = MassOverrideCity.Lit(game);
+    }
+    let inkLine: String = MassOverrideInk.Collect(run, stats);
+    MassOverrideInk.Beat(run, !blackout, 1.0, 0);
+    MassOverrideLights.Beat(run, !blackout, 1.0, 0);
+    if street {
+      MassOverrideFx.Burst(game, player, 1.5);
+    }
+    if blackout {
+      let hold: ref<MassOverrideHold> = new MassOverrideHold();
+      hold.game = game;
+      hold.player = player;
+      hold.targets = targets;
+      hold.run = run;
+      hold.tick = 1;
+      GameInstance.GetDelaySystem(game).DelayCallback(hold, MassOverrideHold.Interval(), false);
+    } else {
+      let pulse: ref<MassOverridePulse> = new MassOverridePulse();
+      pulse.game = game;
+      pulse.player = player;
+      pulse.targets = targets;
+      pulse.run = run;
+      pulse.tick = 1;
+      pulse.lit = false;
+      GameInstance.GetDelaySystem(game).DelayCallback(pulse, MassOverridePulse.Interval(), false);
+    }
+    let revert: ref<MassOverrideRevert> = new MassOverrideRevert();
+    revert.game = game;
+    revert.player = player;
+    revert.targets = targets;
+    revert.playerId = session;
+    revert.run = run;
+    revert.remote = true;
+    revert.seq = seq;
+    MassOverrideRevert.Arm(game, revert, seconds);
+    let line: String = "remote seq=" + ToString(seq) + " (#" + ToString(n) + " here) mode=" + (blackout ? "blackout" : "blink")
+      + " away=" + (placed ? ToString(RoundF(away)) + "m" : "unknown") + " street=" + (street ? "yes" : "no")
+      + " left=" + ToString(RoundF(seconds)) + "s joining=" + (joining ? "yes" : "no")
+      + " targets=" + ToString(ArraySize(targets)) + " glitched=" + ToString(stats.glitched) + " strobed=" + ToString(stats.strobed)
+      + " cars=" + ToString(stats.accelerated + stats.alarms + stats.honks) + " ink=" + ToString(ArraySize(run.ink))
+      + " lights=" + ToString(ArraySize(run.lights)) + " city=" + stats.cityBefore + (blackout ? "->forcedOff" : "->forcedOn")
+      + " registry=" + ToString(stats.registry) + "/" + ToString(stats.registryNear);
+    MassOverrideLog.Write(line);
+    FTLog("[MassOverride] " + inkLine);
+    MassOverrideCastPost.Report(game, "{\"phase\":\"remote\",\"playerId\":" + MassOverrideLog.Quote(session)
+      + ",\"build\":\"" + MassOverrideBuild.Version() + "\""
+      + ",\"seq\":" + ToString(seq)
+      + ",\"mode\":\"" + (blackout ? "blackout" : "blink") + "\""
+      + ",\"away\":" + ToString(RoundF(away))
+      + ",\"street\":" + (street ? "true" : "false")
+      + ",\"joining\":" + (joining ? "true" : "false")
+      + ",\"seconds\":" + ToString(RoundF(seconds))
+      + ",\"targets\":" + ToString(ArraySize(targets))
+      + ",\"glitched\":" + ToString(stats.glitched)
+      + ",\"emp\":" + ToString(stats.emp)
+      + ",\"strobed\":" + ToString(stats.strobed)
+      + ",\"accelerated\":" + ToString(stats.accelerated)
+      + ",\"alarms\":" + ToString(stats.alarms)
+      + ",\"honks\":" + ToString(stats.honks)
+      + ",\"terror\":" + ToString(stats.terror)
+      + ",\"inkTargets\":" + ToString(ArraySize(run.ink))
+      + ",\"lightComponents\":" + ToString(ArraySize(run.lights))
+      + ",\"city\":\"" + stats.cityBefore + "\""
+      + ",\"cityForced\":" + (stats.cityForced ? "true" : "false")
+      + ",\"registry\":" + ToString(stats.registry)
+      + ",\"registryNear\":" + ToString(stats.registryNear)
+      + ",\"hackInView\":" + ToString(stats.hackInView) + "}");
+    MassOverrideLog.Flush(game, session, "remote");
+  }
+
+  // What the caster's sweep reaches around the cast: the devices streamed in near it (the attach
+  // registry), and -- standing in it -- the caster's own first probe from here. Never people: nobody
+  // is turned on this V; the crowd panics from the broadcast alone.
+  public static func Collect(player: ref<PlayerPuppet>, origin: Vector4, away: Float, stats: ref<MassOverrideStats>) -> array<ref<MassOverrideTarget>> {
+    let game: GameInstance = player.GetGame();
+    let out: array<ref<MassOverrideTarget>>;
+    let registry: ref<MassOverrideRegistry> = MassOverrideRegistry.Get(game);
+    if IsDefined(registry) {
+      stats.registry = registry.Size();
+      stats.attachEvents = registry.AttachEvents();
+      let ids: array<EntityID> = registry.Near(game, origin, MassOverrideRegistry.Reach());
+      let i: Int32 = 0;
+      while i < ArraySize(ids) && ArraySize(out) < MassOverrideRemote.Cap() {
+        let object: ref<GameObject> = GameInstance.FindEntityByID(game, ids[i]) as GameObject;
+        if IsDefined(object) {
+          ArrayPush(out, MassOverrideProbe.DeviceTarget(object, stats));
+          stats.registryNear += 1;
+        }
+        i += 1;
+      }
+    } else {
+      stats.registry = -1;
+    }
+    if away >= 0.0 && away <= MassOverrideProbe.FirstReach() {
+      let probed: array<ref<MassOverrideTarget>> = MassOverrideProbe.Fill(player, MassOverrideRemote.Cap(), true, stats);
+      let j: Int32 = 0;
+      while j < ArraySize(probed) && ArraySize(out) < MassOverrideRemote.Cap() {
+        if probed[j].kind != MassOverrideKind.Person() && !MassOverrideProbe.Has(out, probed[j].entityId) {
+          ArrayPush(out, probed[j]);
+        }
+        j += 1;
+      }
+    }
+    return out;
+  }
+}
+
+// What a cast does to what it found -- the same for the caster's own game (Capri.MassOverride.reds)
+// and for another player's cast run here; people (turned on V, scared by name) only for the caster.
+public class MassOverrideApply {
+  public static func Targets(game: GameInstance, player: ref<PlayerPuppet>, targets: array<ref<MassOverrideTarget>>,
+      run: ref<MassOverrideRun>, stats: ref<MassOverrideStats>, blackout: Bool, people: Bool) -> Void {
+    let camera: ref<CameraSystem> = GameInstance.GetCameraSystem(game);
+    let here: Vector4 = player.GetWorldPosition();
+    let i: Int32 = 0;
+    while i < ArraySize(targets) {
+      let object: ref<GameObject> = GameInstance.FindEntityByID(game, targets[i].entityId) as GameObject;
+      if targets[i].kind == MassOverrideKind.Person() {
+        if people {
+          // People turn on V in both modes, and each is scared by name, so
+          // someone out of the broadcast's line still runs.
+          MassOverrideEffects.SetHostile(object as NPCPuppet, player, true);
+          stats.hostile += 1;
+          if MassOverridePeople.Scare(player, object as NPCPuppet) {
+            stats.terror += 1;
+          }
+          // Only ambient crowd runs from a panic; other players' puppets and
+          // server-managed NPCs do not, which is what the count tells apart.
+          let puppet: ref<ScriptedPuppet> = object as ScriptedPuppet;
+          if IsDefined(puppet) && puppet.IsCrowd() {
+            stats.crowd += 1;
+          }
+        }
+      } else {
+        if targets[i].kind == MassOverrideKind.Vehicle() {
+          // A car with crowd at the wheel floors it, alarm going; a parked one's
+          // alarm goes off; one someone else is in honks.
+          let car: Int32 = MassOverrideCars.Hack(game, object as VehicleObject, targets[i]);
+          if car == MassOverrideCars.Accelerate() {
+            stats.accelerated += 1;
+          }
+          if car == MassOverrideCars.Alarm() {
+            stats.alarms += 1;
+          }
+          if car == MassOverrideCars.Honk() {
+            stats.honks += 1;
+          }
+          if car != MassOverrideCars.None() {
+            stats.changed += 1;
+            MassOverrideHack.Seen(stats, camera, object, here);
+          }
+        } else {
+          // Machines and screens glitch the way V's own hack makes them, with the
+          // EMP's sparks; lights go on the beat; doors, loot and terminals are
+          // reported and left alone.
+          let hit: Bool = false;
+          if MassOverrideHack.Glitchable(object) {
+            if MassOverrideHack.Glitch(targets[i], object) {
+              stats.glitched += 1;
+              stats.lightComponents += MassOverrideLights.Collect(run, object);
+              hit = true;
+            }
+            if MassOverrideHack.Emp(targets[i], object, MassOverrideRun.Seconds(run, game)) {
+              stats.emp += 1;
+            }
+          } else {
+            if MassOverrideHack.Strobable(object) {
+              if MassOverrideHack.StrobeStart(targets[i], object, !blackout) {
+                stats.strobed += 1;
+                stats.lightComponents += MassOverrideLights.Collect(run, object);
+                if targets[i].stateOn {
+                  stats.strobeLitBefore += 1;
+                }
+                hit = true;
+              }
+            } else {
+              stats.notHacked += 1;
+            }
+          }
+          if hit {
+            stats.changed += 1;
+            MassOverrideHack.Seen(stats, camera, object, here);
+          }
+        }
+      }
+      i += 1;
+    }
+  }
+}
+
+// Sends one cast to the gate (MassOverrideFeed.Base). The gate keeps the cooldown per game session
+// and hands the cast to every other game (GET /casts); on a refusal it replies 409 and the cast is
+// not handed out. The local cast keeps running on its own, so an unreachable server never blocks V.
 public class MassOverrideCastPost extends DelayCallback {
   public let game: GameInstance;
   public let body: String;
@@ -446,12 +832,24 @@ public class MassOverrideCastPost extends DelayCallback {
   public let isRegister: Bool;
   public let isReport: Bool; // a diagnostics post: its reply applies nothing
   public let castBody: String;
+  public let send: ref<MassOverrideCastSend>; // a try of this cast (MassOverrideCastSend), else none
+  public let attempt: Int32;
   private let keepAlive: Bool; // the object kept itself scheduled for its reply
 
-  // The JSON body for /cast: the caster's id and the candidates as { id, type }. The
-  // type is the kind name only; the server does not decide targets from it.
-  public static func Body(player: ref<PlayerPuppet>, targets: array<ref<MassOverrideTarget>>) -> String {
-    let body: String = "{\"playerId\":\"" + EntityID.ToDebugString(player.GetEntityID()) + "\",\"candidates\":[";
+  // The JSON body for /cast: the caster's ids (V's entity id, the same on every PC, and this game's
+  // own session id), where V stands, the mode this game runs, the cast's token, and the candidates as
+  // { id, type }. The type is the kind name only; the server does not decide targets from it.
+  public static func Body(player: ref<PlayerPuppet>, targets: array<ref<MassOverrideTarget>>, mode: String, token: String) -> String {
+    let prefs: ref<MassOverridePrefs> = MassOverridePrefs.Get();
+    let session: String = "";
+    if IsDefined(prefs) {
+      session = prefs.Session();
+    }
+    let at: Vector4 = player.GetWorldPosition();
+    let body: String = "{\"playerId\":\"" + EntityID.ToDebugString(player.GetEntityID()) + "\""
+      + ",\"session\":\"" + session + "\",\"token\":\"" + token + "\",\"mode\":\"" + mode + "\""
+      + ",\"x\":" + ToString(at.X) + ",\"y\":" + ToString(at.Y) + ",\"z\":" + ToString(at.Z)
+      + ",\"candidates\":[";
     let i: Int32 = 0;
     while i < ArraySize(targets) {
       let kind: String = "person";
@@ -485,11 +883,16 @@ public class MassOverrideCastPost extends DelayCallback {
   // Registers the caster with the gate before the first cast. The server rejects a cast
   // from an unknown player, so this runs first and the cast follows its reply.
   public static func Register(game: GameInstance, playerId: String, castBody: String) -> Void {
-    let body: String = "{\"id\":\"" + playerId + "\",\"ownsCapri\":true,\"capriSummoned\":true,\"balance\":100}";
+    let prefs: ref<MassOverridePrefs> = MassOverridePrefs.Get();
+    let session: String = "";
+    if IsDefined(prefs) {
+      session = prefs.Session();
+    }
+    let body: String = "{\"id\":\"" + playerId + "\",\"session\":\"" + session + "\",\"ownsCapri\":true,\"capriSummoned\":true,\"balance\":100}";
     let post: ref<MassOverrideCastPost> = new MassOverrideCastPost();
     post.game = game;
     post.body = body;
-    post.url = "https://xyberrp.duckdns.org/mass-override-staging/players";
+    post.url = MassOverrideFeed.Base() + "/players";
     post.isRegister = true;
     post.castBody = castBody;
     GameInstance.GetDelaySystem(game).DelayCallback(post, 0.0, false);
@@ -502,7 +905,7 @@ public class MassOverrideCastPost extends DelayCallback {
     let post: ref<MassOverrideCastPost> = new MassOverrideCastPost();
     post.game = game;
     post.body = body;
-    post.url = "https://xyberrp.duckdns.org/mass-override-staging/report";
+    post.url = MassOverrideFeed.Base() + "/report";
     post.isRegister = false;
     post.isReport = true;
     GameInstance.GetDelaySystem(game).DelayCallback(post, 0.0, false);
@@ -513,7 +916,7 @@ public class MassOverrideCastPost extends DelayCallback {
     let post: ref<MassOverrideCastPost> = new MassOverrideCastPost();
     post.game = game;
     post.body = castBody;
-    post.url = "https://xyberrp.duckdns.org/mass-override-staging/cast";
+    post.url = MassOverrideFeed.Base() + "/cast";
     post.isRegister = false;
     GameInstance.GetDelaySystem(game).DelayCallback(post, 0.0, false);
   }
@@ -523,6 +926,10 @@ public class MassOverrideCastPost extends DelayCallback {
   private cb func OnReply(response: ref<HttpResponse>) -> Void {
     let ok: Bool = IsDefined(response) && response.GetStatusCode() == 200;
     if this.isReport { return; }
+    if IsDefined(this.send) {
+      this.send.Answered(this.attempt, response, this.isRegister);
+      return;
+    }
     if this.isRegister {
       MassOverrideLog.Write("register " + (ok ? "ok" : "failed") + " -> " + (ok ? "sending cast" : "cast not sent"));
       if ok {
@@ -531,20 +938,114 @@ public class MassOverrideCastPost extends DelayCallback {
       return;
     }
     if ok {
-      let text: String = response.GetText();
-      if StrContains(text, "\"mode\":\"blackout\"") {
-        MassOverrideFeed.Apply(this.game, MassOverrideMode.Blackout());
-      } else {
-        if StrContains(text, "\"mode\":\"blink\"") {
-          MassOverrideFeed.Apply(this.game, MassOverrideMode.Blink());
-        }
-      }
-      MassOverrideLog.Write("server cast ok");
+      // the gate hands it to every other game now (GET /casts); this game already runs it
+      MassOverrideLog.Write("server cast ok: handed to every other game in the session");
     } else {
       let status: Int32 = IsDefined(response) ? response.GetStatusCode() : -1;
       let why: String = IsDefined(response) ? response.GetText() : "no response";
       MassOverrideLog.Write("server cast refused status=" + ToString(status) + " " + why);
     }
+  }
+}
+
+// A CAST HANDED TO THE GATE, sent again until the gate has it. On 2026-11-12 a cast from a PC whose
+// connection to the server dropped now and then ("Recv failure: Connection was reset", "Failed to
+// connect ... after 21025 ms") ran on that PC only: the one request that carried it was lost, and
+// no other game ever heard of it. Now the cast goes straight to /cast (the gate registers a game it
+// does not know itself) and is sent again while no answer has come -- a try still out is not waited
+// for: the gate answers a cast it already has (the same token) with that cast, so it is never run
+// or charged twice. A refusal (409: recharging...) is an answer too. Each try and the outcome are in
+// the cast's log lines, which go to the gate with its reports.
+public class MassOverrideCastSend extends DelayCallback {
+  public let game: GameInstance;
+  public let body: String;
+  public let token: String;
+  public let attempts: Int32;
+  public let answered: Bool;
+  public let startedAt: Float;
+  public let registered: Bool;
+
+  public static func MaxAttempts() -> Int32 { return 6; }
+  // A cast older than this is not sent any more: the others would only see its last seconds.
+  public static func GiveUpSeconds() -> Float { return 26.0; }
+  // Seconds from one try to the next while no answer has come.
+  public static func Wait(attempt: Int32) -> Float {
+    if attempt <= 1 { return 3.0; }
+    if attempt == 2 { return 4.0; }
+    return 5.0;
+  }
+
+  public static func Start(game: GameInstance, body: String, token: String) -> Void {
+    let send: ref<MassOverrideCastSend> = new MassOverrideCastSend();
+    send.game = game;
+    send.body = body;
+    send.token = token;
+    send.startedAt = EngineTime.ToFloat(GameInstance.GetSimTime(game));
+    GameInstance.GetDelaySystem(game).DelayCallback(send, 0.0, false);
+  }
+
+  // One try, or the check after one: nothing once the gate has answered.
+  public func Call() -> Void {
+    if this.answered { return; }
+    let took: Float = EngineTime.ToFloat(GameInstance.GetSimTime(this.game)) - this.startedAt;
+    if this.attempts >= MassOverrideCastSend.MaxAttempts() || took > MassOverrideCastSend.GiveUpSeconds() {
+      MassOverrideLog.Write("server cast NOT delivered after " + ToString(this.attempts) + " tries in "
+        + ToString(RoundF(took)) + " s (token " + this.token + "): it ran on this screen only");
+      return;
+    }
+    this.attempts += 1;
+    // the delay system holds this object (and the state the tries' replies write to) until the next check
+    GameInstance.GetDelaySystem(this.game).DelayCallback(this, MassOverrideCastSend.Wait(this.attempts), false);
+    if this.attempts > 1 {
+      MassOverrideLog.Write("server cast: no answer yet, try " + ToString(this.attempts) + " at "
+        + ToString(RoundF(took)) + " s (token " + this.token + ")");
+    }
+    this.Post(MassOverrideFeed.Base() + "/cast", this.body, false);
+  }
+
+  private func Post(url: String, body: String, register: Bool) -> Void {
+    let post: ref<MassOverrideCastPost> = new MassOverrideCastPost();
+    post.game = this.game;
+    post.body = body;
+    post.url = url;
+    post.isRegister = register;
+    post.send = this;
+    post.attempt = this.attempts;
+    GameInstance.GetDelaySystem(this.game).DelayCallback(post, 0.0, false);
+  }
+
+  // A try's answer. 200: the gate has it (sent once more, it answers with the cast it has). 409: refused, said.
+  // 404: an older gate that wants the game registered first -- registered here, the next try follows.
+  public func Answered(attempt: Int32, response: ref<HttpResponse>, register: Bool) -> Void {
+    let status: Int32 = IsDefined(response) ? response.GetStatusCode() : -1;
+    if register {
+      MassOverrideLog.Write("server cast: registered with an older gate (status " + ToString(status) + ")");
+      this.registered = status == 200;
+      return;
+    }
+    if this.answered { return; }
+    let took: Float = EngineTime.ToFloat(GameInstance.GetSimTime(this.game)) - this.startedAt;
+    if status == 200 {
+      this.answered = true;
+      MassOverrideLog.Write("server cast ok on try " + ToString(attempt) + " of " + ToString(this.attempts) + " ("
+        + ToString(RoundF(took)) + " s): handed to every other game in the session");
+      return;
+    }
+    if status == 409 {
+      this.answered = true;
+      MassOverrideLog.Write("server cast refused on try " + ToString(attempt) + ": " + response.GetText());
+      return;
+    }
+    if status == 404 && !this.registered {
+      let prefs: ref<MassOverridePrefs> = MassOverridePrefs.Get();
+      let session: String = IsDefined(prefs) ? prefs.Session() : "";
+      this.Post(MassOverrideFeed.Base() + "/players", "{\"id\":\"" + session + "\",\"session\":\"" + session
+        + "\",\"ownsCapri\":true,\"capriSummoned\":true,\"balance\":100}", true);
+      return;
+    }
+    let why: String = IsDefined(response) ? response.GetText() : "no response";
+    MassOverrideLog.Write("server cast try " + ToString(attempt) + " failed (status " + ToString(status) + " after "
+      + ToString(RoundF(took)) + " s): " + why);
   }
 }
 
@@ -1346,6 +1847,9 @@ public class MassOverrideEffects {
 public class MassOverrideRun {
   public let ended: Bool;
   public let endAt: Float;
+  public let remote: Bool;  // another player's cast, run here (MassOverrideRemote)
+  public let farOff: Bool;  // that cast was beyond StreetReach(): the city's part only, no street, no panic
+  public let seq: Int32;    // its seq at the gate
   public let ink: array<ref<MassOverrideInkTarget>>;      // billboards and screens (MassOverrideInk)
   public let lights: array<ref<MassOverrideLightTarget>>; // light components (MassOverrideLights)
 
@@ -1358,6 +1862,14 @@ public class MassOverrideRun {
   public func Live(game: GameInstance) -> Bool {
     if this.ended { return false; }
     return EngineTime.ToFloat(GameInstance.GetSimTime(game)) < this.endAt;
+  }
+
+  // Seconds the run has left (what the EMP sparks last); the cast's full length without a run.
+  public static func Seconds(run: ref<MassOverrideRun>, game: GameInstance) -> Float {
+    if !IsDefined(run) { return 30.0; }
+    let left: Float = run.endAt + 0.2 - EngineTime.ToFloat(GameInstance.GetSimTime(game));
+    if left < 1.0 { return 1.0; }
+    return left;
   }
 }
 
@@ -1648,7 +2160,7 @@ public class MassOverridePulse extends DelayCallback {
     } else {
       MassOverrideCity.Dark(this.game);
     }
-    if MassOverridePeople.Due(this.tick, MassOverridePulse.Interval()) {
+    if MassOverridePeople.Due(this.tick, MassOverridePulse.Interval()) && !this.run.farOff {
       let player: ref<PlayerPuppet> = this.player;
       MassOverridePeople.Panic(player);
       MassOverrideCars.Rehack(this.game, this.targets);
@@ -1692,7 +2204,7 @@ public class MassOverrideHold extends DelayCallback {
         MassOverrideCity.Dark(this.game);
       }
     }
-    if MassOverridePeople.Due(this.tick, MassOverrideHold.Interval()) {
+    if MassOverridePeople.Due(this.tick, MassOverrideHold.Interval()) && !this.run.farOff {
       let player: ref<PlayerPuppet> = this.player;
       MassOverridePeople.Panic(player);
       MassOverrideCars.Rehack(this.game, this.targets);
@@ -1720,13 +2232,46 @@ public class MassOverrideRevert extends DelayCallback {
   public let targets: array<ref<MassOverrideTarget>>;
   public let playerId: String;
   public let run: ref<MassOverrideRun>;
+  public let remote: Bool;  // another player's cast run here
+  public let seq: Int32;    // its seq at the gate
+  public let id: Int32;     // which run on screen this is (MassOverridePrefs.SetActive)
+  public let done: Bool;    // put back already (early, by the next cast): the scheduled call does nothing
+
+  // Schedules the revert and makes its run the one on screen.
+  public static func Arm(game: GameInstance, revert: ref<MassOverrideRevert>, seconds: Float) -> Void {
+    let prefs: ref<MassOverridePrefs> = MassOverridePrefs.Get();
+    if IsDefined(prefs) {
+      revert.id = prefs.SetActive(revert);
+    }
+    GameInstance.GetDelaySystem(game).DelayCallback(revert, seconds, false);
+  }
+
+  // The run on screen, put back now: the next cast -- here or another player's -- saves the street as
+  // it was, not halfway through a beat (it would then put the beat's colours back for good).
+  public static func EndActive(game: GameInstance, why: String) -> Void {
+    let prefs: ref<MassOverridePrefs> = MassOverridePrefs.Get();
+    if !IsDefined(prefs) { return; }
+    let active: ref<MassOverrideRevert> = prefs.Active();
+    if IsDefined(active) && !active.done {
+      let whose: String = "this game's cast";
+      if active.remote {
+        whose = "another player's cast seq=" + ToString(active.seq);
+      }
+      MassOverrideLog.Write("the run on screen (" + whose + ") ends early: " + why);
+      active.Call();
+    }
+  }
 
   public func Call() -> Void {
+    if this.done { return; }
+    this.done = true;
     if IsDefined(this.run) { this.run.ended = true; }
     let player: ref<PlayerPuppet> = this.player;
     let inkBack: Int32 = MassOverrideInk.Restore(this.run);
     let lightsBack: Int32 = MassOverrideLights.Restore(this.run);
-    MassOverrideFx.Burst(this.game, player, 0.6);
+    if !IsDefined(this.run) || !this.run.farOff {
+      MassOverrideFx.Burst(this.game, player, 0.6);
+    }
     let released: Bool = MassOverrideCity.Release(this.game);
     let unglitched: Int32 = 0;
     let relit: Int32 = 0;
@@ -1762,8 +2307,9 @@ public class MassOverrideRevert extends DelayCallback {
     }
     MassOverrideLog.Write("revert ink=" + ToString(inkBack) + " lights=" + ToString(lightsBack) + " unglitched=" + ToString(unglitched) + " relit=" + ToString(relit) + " restored=" + ToString(restored)
       + " silenced=" + ToString(silenced) + " calmed=" + ToString(calmed) + " city=" + (released ? "released" : "missing"));
-    MassOverrideCastPost.Report(this.game, "{\"phase\":\"revert\",\"playerId\":" + MassOverrideLog.Quote(this.playerId)
+    MassOverrideCastPost.Report(this.game, "{\"phase\":\"" + (this.remote ? "remote-revert" : "revert") + "\",\"playerId\":" + MassOverrideLog.Quote(this.playerId)
       + ",\"build\":\"" + MassOverrideBuild.Version() + "\""
+      + ",\"seq\":" + ToString(this.seq)
       + ",\"cityReleased\":" + (released ? "true" : "false")
       + ",\"ink\":" + ToString(inkBack)
       + ",\"lightComponents\":" + ToString(lightsBack)
@@ -2377,6 +2923,8 @@ public class MassOverrideRegistry extends ScriptableSystem {
   }
 
   private func OnAttach() -> Void {
+    // every game follows the gate's feed from the start of its session (not only after it cast)
+    MassOverrideFeed.Start(this.GetGameInstance(), "session start");
     this.m_devices = new inkHashMap();
     let callbacks: ref<CallbackSystem> = GameInstance.GetCallbackSystem();
     MassOverrideRegistry.Targets(callbacks.RegisterCallback(n"Entity/Attach", this, n"OnDeviceAttach"));
