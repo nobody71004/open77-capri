@@ -70,6 +70,16 @@ REQUIRED_FILES = (
 
 CODEWARE_DIR = "r6/scripts/CapriPersonalityConstruct/Codeware"
 CODEWARE_COUNT = 5
+
+# Capri's Mass Override action does not compile without this file: it declares the
+# probe, the effects, the prefs service and the cast/feed HTTP classes that
+# Capri.MassOverride.reds calls. The official release does not contain it and no
+# other launcher package ships it, so a package built without it leaves every
+# player with a script set that fails to resolve. It is added from this repo.
+MASS_OVERRIDE_SOURCE = (
+    Path(__file__).resolve().parents[1] / "game" / "r6" / "scripts" / "Open77" / "Open77MassOverride.reds"
+)
+MASS_OVERRIDE_TARGET = "r6/scripts/Open77/Open77MassOverride.reds"
 DISPLAY_NAME = "Capri - AI Companion with Voice (LLM)"
 MOD_ID = "capri-personality-construct"
 
@@ -239,6 +249,11 @@ def main() -> int:
         print(f"Codeware dependencies: added {CODEWARE_COUNT} scripts under {CODEWARE_DIR}/")
     else:
         print("Codeware dependencies: not supplied; the package will rely on the installed Codeware package")
+
+    if not MASS_OVERRIDE_SOURCE.is_file():
+        raise BuildError(f"Mass Override script not found: {MASS_OVERRIDE_SOURCE}")
+    entries[MASS_OVERRIDE_TARGET] = MASS_OVERRIDE_SOURCE.read_bytes()
+    print(f"Mass Override: added {MASS_OVERRIDE_TARGET}")
 
     file_name = args.name or f"CapriPersonalityConstruct-{args.version}.zip"
     out_dir = args.out_dir

@@ -147,6 +147,60 @@ test("an unknown mode is refused and changes nothing", async () => {
   }
 });
 
+test("the feed replays an accepted cast once and then reports none", async () => {
+  const srv = await start({ cooldownMs: 0, cost: 0 });
+  try {
+    await post(srv.base, "/players", { id: "p1", ownsCapri: true, capriSummoned: true, balance: 5 });
+    const first = await post(srv.base, "/cast", { playerId: "p1", candidates: candidates(1, "a") });
+    assert.equal(first.status, 200);
+
+    const cold = await fetch(`${srv.base}/feed?since=0`);
+    assert.equal(cold.headers.get("content-type"), "text/plain");
+    assert.equal(await cold.text(), "1 blackout", "a client that has seen nothing gets the cast");
+
+    const caughtUp = await fetch(`${srv.base}/feed?since=1`);
+    assert.equal(await caughtUp.text(), "1 none", "its own cursor comes back so it never rewinds");
+  } finally {
+    await srv.close();
+  }
+});
+
+test("the feed hands out the server's mode, not the client's guess", async () => {
+  const srv = await start({ cooldownMs: 0, cost: 0 });
+  try {
+    await post(srv.base, "/players", { id: "p1", ownsCapri: true, capriSummoned: true, balance: 5 });
+    await post(srv.base, "/players", { id: "p2", ownsCapri: true, capriSummoned: true, balance: 5 });
+    await post(srv.base, "/cast", { playerId: "p1", candidates: candidates(1, "a") });
+    await post(srv.base, "/cast", { playerId: "p2", candidates: candidates(1, "b") });
+
+    const seen = await (await fetch(`${srv.base}/feed?since=0`)).text();
+    assert.equal(seen, "2 blink", "the newest unseen cast carries the second mode");
+
+    const events = await (await fetch(`${srv.base}/events?since=0`)).json();
+    assert.equal(events.next, 2);
+    assert.equal(events.events.length, 2, "a poller that missed one still sees both");
+    assert.deepEqual(events.events.map((e) => e.mode), ["blackout", "blink"]);
+    assert.equal(events.events[0].casterId, "p1");
+  } finally {
+    await srv.close();
+  }
+});
+
+test("a refused cast never reaches the feed", async () => {
+  const srv = await start({ cooldownMs: 0, cost: 0 });
+  try {
+    await post(srv.base, "/players", { id: "p1", ownsCapri: true, capriSummoned: false, balance: 50 });
+    const refused = await post(srv.base, "/cast", { playerId: "p1", candidates: candidates(1, "a") });
+    assert.equal(refused.status, 409);
+
+    assert.equal(await (await fetch(`${srv.base}/feed?since=0`)).text(), "0 none");
+    const events = await (await fetch(`${srv.base}/events?since=0`)).json();
+    assert.deepEqual(events.events, []);
+  } finally {
+    await srv.close();
+  }
+});
+
 test("a refused cast over HTTP leaves the shared beat alone", async () => {
   const srv = await start({ cooldownMs: 0, cost: 0 });
   try {

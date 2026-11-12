@@ -1,4 +1,56 @@
+import RedHttpClient.*
+
 // Mass Override: the probe sweep, the per-area cache and the effects.
+//
+// WHAT THE STREET SHOWS (1.16.15). Two 1.16.14 casts in Japantown did what they
+// reported -- 21 machines glitching, 42 lights switching, 4 cars floored, horns -- and
+// the street still looked the same, because what makes it bright is not devices: the
+// billboards and ad screens are world advertisement nodes drawn by the ink
+// advertisements layer, and the screens on walls and machines are world widgets. None
+// of them has a device controller; all of them are ink. Codeware hands out the ink
+// system's layers and its world widgets (inkSystem.GetLayers / GetWorldWidgets), so the
+// beat now blinks and recolours those roots too (MassOverrideInk), every light
+// component on a hacked device pulses in hacker colours through the call the game's
+// own ChangeLightEvent ends in (gameLightComponent.SetParameters, MassOverrideLights),
+// and V's screen glitches as the wave goes out and again as the city comes back
+// (transition_glitch_loop, the fast-forward glitch; MassOverrideFx). Every opacity,
+// tint and light setting is saved at the cast and put back at the revert.
+//
+// WHAT A CAST CHANGES (1.16.14). The 1.16.13 casts did everything they reported -- 66
+// devices without power, 8 car alarms ringing, 47 lights and screens that had been on
+// -- and nobody standing in Japantown at 8 in the morning could tell: a vending machine
+// with its screen off and a street lamp that was already off by day look like nothing
+// happened. Every lever is now one the game plays when V hacks something:
+//   machines, screens  the device's own glitch (QuestStartGlitch -> StartGlitching): a
+//                      vending machine throws cans out, ads and TVs break up, with the
+//                      glitch sound; plus the EMP grenade's sparks (EMPHitEvent)
+//   lights             switched ON and OFF on a beat through their own controllers
+//                      (SetDeviceON / SetDeviceOFF), which lights a street lamp the
+//                      timetable keeps off by day; the city light system strobes too
+//   cars               a car with crowd at the wheel gets V's Accelerate quickhack and
+//                      high-priority panic driving, and its alarm; a parked car its alarm
+//   people             the Terror stim and hostility, renewed every few seconds
+// The revert stops each glitch, puts every light back in the state it had, silences
+// the alarms, calms the people and removes the city request (MassOverrideHack,
+// MassOverrideCars, MassOverrideRevert). The step log goes to the gate (phase "log"):
+// a second FileSystem.GetStorage("CapriConstruct") revokes Capri's own storage.
+//
+// WHAT A CAST CHANGED (1.16.11 - 1.16.13). A live cast on 1.16.10 switched 243 components on 50
+// devices in Japantown and nobody could see it: the devices were vending machines,
+// door panels and traffic lights, and a disabled widget or light component is not
+// what makes a street bright. Every lever is now one the game itself uses:
+//   city lights  the City Light System's forced state (MassOverrideCity), the switch
+//                weather and quests use for every street lamp, building light and
+//                neon sign on a fuse;
+//   devices      SetDeviceUnpowered on each device's own controller
+//                (MassOverridePower), the fuse-box power cut;
+//   people       a Terror stim, the panic MaxTac's arrival causes (MassOverridePeople);
+//   cars         the car alarm, or the horn of an occupied car (MassOverrideCars);
+// and the devices no targeting query returns come from an attach registry
+// (MassOverrideRegistry). Each cast reports what it asked for, what took two seconds
+// later, and what the revert put back (phase cast / verify / revert / settled).
+// The notes below describe the original component pass, which is kept for the probe
+// and the cache.
 //
 // HOSTILITY is the same call Open77PlayerModels.reds uses:
 // AttitudeAgent.SetAttitudeTowards(EAIAttitude.AIA_Hostile).
@@ -65,6 +117,20 @@ public class MassOverrideTarget {
   // already dark, or a lamp that was already off, stays that way.
   public let screenWasOn: Bool;
   public let lightWasOn: Bool;
+  // What this cast did to it through the game's own systems, so the revert undoes
+  // exactly that and nothing else.
+  public let cut: Bool;   // unpowered through its own controller (MassOverridePower)
+  public let alarm: Bool; // car alarm switched on (MassOverrideCars)
+  // The controller this cast cut, kept so the power comes back even when the device has
+  // streamed out by the revert: a cast in North Oak followed by a fast travel left 20
+  // devices without power, because the revert could no longer find a single one of them.
+  public let ps: ref<ScriptableDeviceComponentPS>;
+  // 1.16.14: what the hack did, so the revert undoes exactly that (MassOverrideHack).
+  public let glitch: Bool;  // its own glitch started through its controller
+  public let emp: Bool;     // EMP sparks queued; they end themselves after their lifetime
+  public let strobe: Bool;  // switched ON and OFF on the beat
+  public let stateOn: Bool; // the strobed device was ON at the cast: the revert puts that back
+  public let hacked: Bool;  // a crowd-driven car given the Accelerate quickhack
 }
 
 // Kept as Int32 constants rather than an enum so the mode can be passed through a
@@ -74,6 +140,59 @@ public class MassOverrideMode {
   public static func Blink() -> Int32 { return 0; }
   // Hold them dark for the duration, then restore.
   public static func Blackout() -> Int32 { return 1; }
+}
+
+// Int32 constants for the same reason the modes are: they travel through a
+// cached entry and are compared with != , which compiles everywhere.
+// Runtime diagnostics. Each stage of a cast is written with FTLog and kept in memory
+// (MassOverridePrefs), and the lines go to the gate with the cast's reports (phase
+// "log", MassOverrideLog.Flush), so a cast that stops early says where it stopped.
+// They used to be appended to r6/storages/CapriConstruct/mass_override.log, which never
+// appeared -- and could not: RedFileSystem lets one caller open a storage, and answers a
+// second FileSystem.GetStorage("CapriConstruct") by revoking that storage for the rest
+// of the session (red4ext/logs/redfilesystem-*.log: "Access to this storage has been
+// permanently revoked"). Capri opens it at start-up, so the first line of the first cast
+// locked Capri herself out of her settings, her history and the files Capri Voz answers
+// in. Nothing here opens a storage any more.
+public class MassOverrideLog {
+  public static func Enabled() -> Bool { return true; }
+  // Lines kept between flushes; the oldest go first.
+  public static func Keep() -> Int32 { return 120; }
+
+  public static func Write(line: String) -> Void {
+    if !MassOverrideLog.Enabled() { return; }
+    FTLog("[MassOverride] " + line);
+    let prefs: ref<MassOverridePrefs> = MassOverridePrefs.Get();
+    if IsDefined(prefs) {
+      prefs.PushLog(line, MassOverrideLog.Keep());
+    }
+  }
+
+  // A JSON string: backslashes first, then quotes.
+  public static func Quote(text: String) -> String {
+    let out: String = StrReplaceAll(text, "\\", "\\\\");
+    out = StrReplaceAll(out, "\"", "\\\"");
+    return "\"" + out + "\"";
+  }
+
+  // Sends the lines written since the last flush to the gate, and forgets them.
+  public static func Flush(game: GameInstance, playerId: String, at: String) -> Void {
+    let prefs: ref<MassOverridePrefs> = MassOverridePrefs.Get();
+    if !IsDefined(prefs) { return; }
+    let lines: array<String> = prefs.TakeLog();
+    if ArraySize(lines) == 0 { return; }
+    let body: String = "{\"phase\":\"log\",\"playerId\":" + MassOverrideLog.Quote(playerId)
+      + ",\"build\":\"" + MassOverrideBuild.Version() + "\""
+      + ",\"at\":" + MassOverrideLog.Quote(at)
+      + ",\"lines\":[";
+    let i: Int32 = 0;
+    while i < ArraySize(lines) {
+      if i > 0 { body += ","; }
+      body += MassOverrideLog.Quote(lines[i]);
+      i += 1;
+    }
+    MassOverrideCastPost.Report(game, body + "]}");
+  }
 }
 
 // Int32 constants for the same reason the modes are: they travel through a
@@ -111,12 +230,15 @@ public class MassOverrideLightSwitch {
 // does not dispatch here yet.
 public class MassOverridePrefs extends ScriptableService {
   private let m_pinned: Int32 = -1; // -1 = alternate, 0 = blink, 1 = blackout
-  private let m_next: Int32 = 1;    // what the next unpinned cast uses (1 = blackout)
+  private let m_next: Int32 = 0;    // what the next unpinned cast uses (0 = blink: the beat reads at once)
   private let m_serverMode: Int32 = -1; // mode a server broadcast named, waiting for its cast
   private let m_lastCastAt: Float = 0.0; // sim time of the last charged cast
   private let m_casts: Int32;           // casts charged so far; 0 means none yet
   private let m_lastFromServer: Bool;   // the last Mode() came from a broadcast, not the cursor
+  private let m_feedRunning: Bool;      // the feed poller is already running this session
   private let m_warnedMissing: Bool; // the one-time "service missing" line was printed
+  private let m_log: array<String>;  // step log lines not yet sent (MassOverrideLog)
+  private let m_logDropped: Int32;   // lines dropped since the last flush, buffer full
 
   public static func Get() -> ref<MassOverridePrefs> {
     let service: ref<MassOverridePrefs> =
@@ -130,6 +252,10 @@ public class MassOverridePrefs extends ScriptableService {
   // A broadcast mode is taken first: the server owns the beat for the whole session,
   // so a client must not advance its own cursor past what everyone else is running.
   // The pin and the local cursor only apply when no broadcast is waiting.
+  // The feed poller owns its own lifetime, so it must only be started once.
+  public func FeedRunning() -> Bool { return this.m_feedRunning; }
+  public func MarkFeedRunning() -> Void { this.m_feedRunning = true; }
+
   public func Mode() -> Int32 {
     let served: Int32 = this.TakeServerMode();
     if served >= 0 { return served; }
@@ -200,6 +326,226 @@ public class MassOverridePrefs extends ScriptableService {
   // the first service that does register carries the flag for the ones that did not.
   public func WarnedMissing() -> Bool { return this.m_warnedMissing; }
   public func MarkWarnedMissing() -> Void { this.m_warnedMissing = true; }
+
+  // The step log, kept here because redscript has no static fields.
+  public func PushLog(line: String, keep: Int32) -> Void {
+    if ArraySize(this.m_log) >= keep {
+      ArrayErase(this.m_log, 0);
+      this.m_logDropped += 1;
+    }
+    ArrayPush(this.m_log, line);
+  }
+
+  public func TakeLog() -> array<String> {
+    let lines: array<String>;
+    if this.m_logDropped > 0 {
+      ArrayPush(lines, "(" + ToString(this.m_logDropped) + " earlier lines dropped)");
+      this.m_logDropped = 0;
+    }
+    let i: Int32 = 0;
+    while i < ArraySize(this.m_log) {
+      ArrayPush(lines, this.m_log[i]);
+      i += 1;
+    }
+    ArrayClear(this.m_log);
+    return lines;
+  }
+}
+
+// Broadcast feed poller. Polls the staging feed over HTTPS (RedHttpClient only sends
+// to HTTPS) and hands each new broadcast mode to MassOverridePrefs. The feed replies
+// "<seq> <mode>" or "<seq> none". Each poll asks only for casts after the cursor, so
+// a broadcast is applied once. Start() does nothing until a feed URL is set, and the
+// cast log says feed=unwired; every cast then runs on its local mode.
+public class MassOverrideFeed {
+  // Empty until the staging feed is wired on: with no URL the poller never starts.
+  public static func Url() -> String { return "https://xyberrp.duckdns.org/mass-override-staging/feed"; }
+  public static func Interval() -> Float { return 3.0; }
+
+  // One poller per session. Start() runs on every cast, and the poller now owns its
+  // own lifetime, so a second one would double every request.
+  public static func Start(game: GameInstance) -> Void {
+    let prefs: ref<MassOverridePrefs> = MassOverridePrefs.Get();
+    if IsDefined(prefs) {
+      if prefs.FeedRunning() { return; }
+      prefs.MarkFeedRunning();
+    }
+    let poll: ref<MassOverrideFeedPoll> = new MassOverrideFeedPoll();
+    poll.game = game;
+    poll.since = 0;
+    GameInstance.GetDelaySystem(game).DelayCallback(poll, MassOverrideFeed.Interval(), false);
+  }
+
+  // Hands a broadcast mode to the prefs service, which holds it for the next cast.
+  public static func Apply(game: GameInstance, mode: Int32) -> Void {
+    let prefs: ref<MassOverridePrefs> = MassOverridePrefs.Get();
+    if IsDefined(prefs) { prefs.ReceiveServerMode(mode); }
+  }
+
+  public static func Label() -> String { return "staging"; }
+}
+
+// One poll of the feed.
+//
+// The response is delivered by name to `this`, and HttpCallback keeps only a WEAK
+// reference to it. A delay callback created for one shot is destroyed the moment
+// its Call() returns, so the reply arrives with nothing left to invoke -- which is
+// exactly what happened: the request went out, the server answered 200, and neither
+// the handler nor the next poll ever ran (one feed line per session in the HTTP
+// log). Re-arming the SAME object before the request leaves the delay system holding
+// it, so it is still alive when the answer lands. That is the same mechanism that
+// keeps the effect pulses alive.
+public class MassOverrideFeedPoll extends DelayCallback {
+  public let game: GameInstance;
+  public let since: Int32;
+
+  public func Call() -> Void {
+    // Re-arm first: this keeps a strong reference alive across the request.
+    GameInstance.GetDelaySystem(this.game).DelayCallback(this, MassOverrideFeed.Interval(), false);
+    let callback: HttpCallback = HttpCallback.Create(this, n"OnReply");
+    AsyncHttpClient.Get(callback, MassOverrideFeed.Url() + "?since=" + ToString(this.since), []);
+  }
+
+  // `cb` is required as well: RedHttpClient only invokes a method marked as a
+  // callback. Both were missing, so the reply was dropped twice over.
+  private cb func OnReply(response: ref<HttpResponse>) -> Void {
+    let next: Int32 = this.since;
+    if IsDefined(response) && response.GetStatusCode() == 200 {
+      let fields: array<String> = StrSplit(response.GetText(), " ");
+      if ArraySize(fields) == 2 {
+        let seq: Int32 = StringToInt(fields[0]);
+        let word: String = fields[1];
+        if seq > this.since {
+          next = seq;
+          if word == "blink" { MassOverrideFeed.Apply(this.game, MassOverrideMode.Blink()); }
+          if word == "blackout" { MassOverrideFeed.Apply(this.game, MassOverrideMode.Blackout()); }
+        }
+      }
+    }
+    // Only when something changed, or the endpoint stopped answering: a line per
+    // poll would be one every three seconds for the whole session.
+    if !IsDefined(response) {
+      MassOverrideLog.Write("feed unreachable since=" + ToString(this.since));
+    } else if next != this.since {
+      MassOverrideLog.Write("feed applied seq=" + ToString(next) + " from=" + ToString(this.since));
+    }
+    // The poll is already armed (Call re-arms before every request); carrying the
+    // cursor on this object is what makes the next request ask for newer casts.
+    this.since = next;
+  }
+}
+
+// Sends one cast to the staging gate. The server decides the targets, the cost, the
+// cooldown and the mode; on a refusal it replies 409 and the cast is not applied. The
+// local cast keeps running on its own, so an unreachable server never blocks V.
+public class MassOverrideCastPost extends DelayCallback {
+  public let game: GameInstance;
+  public let body: String;
+  public let url: String;
+  // True for the /players register: its reply only chains the cast, it never applies a mode.
+  public let isRegister: Bool;
+  public let isReport: Bool; // a diagnostics post: its reply applies nothing
+  public let castBody: String;
+  private let keepAlive: Bool; // the object kept itself scheduled for its reply
+
+  // The JSON body for /cast: the caster's id and the candidates as { id, type }. The
+  // type is the kind name only; the server does not decide targets from it.
+  public static func Body(player: ref<PlayerPuppet>, targets: array<ref<MassOverrideTarget>>) -> String {
+    let body: String = "{\"playerId\":\"" + EntityID.ToDebugString(player.GetEntityID()) + "\",\"candidates\":[";
+    let i: Int32 = 0;
+    while i < ArraySize(targets) {
+      let kind: String = "person";
+      if targets[i].kind == 1 { kind = "screen"; }
+      if targets[i].kind == 2 { kind = "light"; }
+      if targets[i].kind == 3 { kind = "vehicle"; }
+      if i > 0 { body += ","; }
+      body += "{\"id\":\"" + EntityID.ToDebugString(targets[i].entityId) + "\",\"type\":\"" + kind + "\"}";
+      i += 1;
+    }
+    return body + "]}";
+  }
+
+  // How long this post keeps itself alive so its reply can be delivered. The answer
+  // normally lands in well under a second; this only has to outlive the request.
+  public static func KeepAliveSeconds() -> Float { return 60.0; }
+
+  public func Call() -> Void {
+    if this.keepAlive {
+      // The keep-alive firing itself: nothing left to do, and no re-arm, so the
+      // object is released now that its reply has already been handled.
+      return;
+    }
+    this.keepAlive = true;
+    // Hold a strong reference for the life of the request; see MassOverrideFeedPoll.
+    GameInstance.GetDelaySystem(this.game).DelayCallback(this, MassOverrideCastPost.KeepAliveSeconds(), false);
+    let callback: HttpCallback = HttpCallback.Create(this, n"OnReply");
+    AsyncHttpClient.Post(callback, this.url, this.body, []);
+  }
+
+  // Registers the caster with the gate before the first cast. The server rejects a cast
+  // from an unknown player, so this runs first and the cast follows its reply.
+  public static func Register(game: GameInstance, playerId: String, castBody: String) -> Void {
+    let body: String = "{\"id\":\"" + playerId + "\",\"ownsCapri\":true,\"capriSummoned\":true,\"balance\":100}";
+    let post: ref<MassOverrideCastPost> = new MassOverrideCastPost();
+    post.game = game;
+    post.body = body;
+    post.url = "https://xyberrp.duckdns.org/mass-override-staging/players";
+    post.isRegister = true;
+    post.castBody = castBody;
+    GameInstance.GetDelaySystem(game).DelayCallback(post, 0.0, false);
+  }
+
+  // The numbers a cast actually produced, sent to the gate so they can be read on the
+  // server. r6/storages can refuse a write from a script the storage does not know, so
+  // the file log is not enough on its own; this path is known to work.
+  public static func Report(game: GameInstance, body: String) -> Void {
+    let post: ref<MassOverrideCastPost> = new MassOverrideCastPost();
+    post.game = game;
+    post.body = body;
+    post.url = "https://xyberrp.duckdns.org/mass-override-staging/report";
+    post.isRegister = false;
+    post.isReport = true;
+    GameInstance.GetDelaySystem(game).DelayCallback(post, 0.0, false);
+  }
+
+  // Sends the cast after the register's reply, so the server already knows the player.
+  private func SendCast(game: GameInstance, castBody: String) -> Void {
+    let post: ref<MassOverrideCastPost> = new MassOverrideCastPost();
+    post.game = game;
+    post.body = castBody;
+    post.url = "https://xyberrp.duckdns.org/mass-override-staging/cast";
+    post.isRegister = false;
+    GameInstance.GetDelaySystem(game).DelayCallback(post, 0.0, false);
+  }
+
+  // `cb` and the keep-alive above are both required for RedHttpClient to deliver
+  // this: a callback method is invoked by name, and only while its target is alive.
+  private cb func OnReply(response: ref<HttpResponse>) -> Void {
+    let ok: Bool = IsDefined(response) && response.GetStatusCode() == 200;
+    if this.isReport { return; }
+    if this.isRegister {
+      MassOverrideLog.Write("register " + (ok ? "ok" : "failed") + " -> " + (ok ? "sending cast" : "cast not sent"));
+      if ok {
+        this.SendCast(this.game, this.castBody);
+      }
+      return;
+    }
+    if ok {
+      let text: String = response.GetText();
+      if StrContains(text, "\"mode\":\"blackout\"") {
+        MassOverrideFeed.Apply(this.game, MassOverrideMode.Blackout());
+      } else {
+        if StrContains(text, "\"mode\":\"blink\"") {
+          MassOverrideFeed.Apply(this.game, MassOverrideMode.Blink());
+        }
+      }
+      MassOverrideLog.Write("server cast ok");
+    } else {
+      let status: Int32 = IsDefined(response) ? response.GetStatusCode() : -1;
+      let why: String = IsDefined(response) ? response.GetText() : "no response";
+      MassOverrideLog.Write("server cast refused status=" + ToString(status) + " " + why);
+    }
+  }
 }
 
 // Registration check for the two services above, so a service that never
@@ -285,10 +631,44 @@ public class MassOverrideStats {
   public let lightStates: Int32;    // lights whose own on/off (ToggleLight) changed
   public let lightFallbacks: Int32; // lights only the component switch could change
   public let lightEvents: Int32;    // entities a ToggleLightEvent was queued to
-  public let changed: Int32;  // components actually switched by the first pass
+  public let changed: Int32;  // devices cut and cars set off by the cast itself
   public let cacheHit: Bool;  // the block's devices came from the cache
+  public let hostile: Int32;  // people whose attitude towards V was set
   public let blocks: Int32;   // areas the cache holds
   public let seconds: Float;  // wall of the whole cast, as the engine reports it
+  public let powerCut: Int32;     // devices sent SetDeviceUnpowered through their controller
+  public let powerSkipped: Int32; // devices found but not on the power list (doors, loot, ...)
+  public let alarms: Int32;       // parked cars whose alarm was switched on
+  public let honks: Int32;        // occupied cars that were made to honk instead
+  public let terror: Int32;       // panic stims sent: the broadcast from V plus one per person
+  public let registry: Int32;     // devices the attach registry held at cast time (-1: none)
+  public let registryNear: Int32; // of those, near V and not already found by the probe
+  public let attachEvents: Int32; // device attach events the registry has seen this session
+  public let cityBefore: String;  // city light state before the cast: default/forcedOn/forcedOff/missing
+  public let cityForced: Bool;    // the ForcedOFF request was queued
+  public let cityFuses: Int32;    // fuses the city light system drives (-1: no system)
+  public let cityLights: Int32;   // lights behind those fuses
+  public let hour: Int32;         // in-game hour: city lights are already off by day
+  public let classes: String;     // devices found per class, "VendingMachine:25,TrafficLight:8"
+  public let litBefore: Int32;    // of the devices cut, those that had a screen or a light on
+  public let cutInView: Int32;    // of the devices cut, those inside the camera's frustum
+  public let nearestCut: Float;   // metres from V to the nearest device cut (-1: none)
+  public let crowd: Int32;        // of the people found, ambient crowd (the ones who can run)
+  public let area: String;        // district:cell the cast was made in
+  // 1.16.14 levers (MassOverrideHack, MassOverrideCars)
+  public let glitched: Int32;     // machines and screens sent their own glitch
+  public let emp: Int32;          // devices given the EMP sparks
+  public let strobed: Int32;      // lights switched on the beat
+  public let strobeLitBefore: Int32; // of those, the ones that were ON at the cast
+  public let accelerated: Int32;  // crowd-driven cars given the Accelerate quickhack
+  public let notHacked: Int32;    // devices no lever applies to (doors, loot, terminals...)
+  public let hackInView: Int32;   // hacked devices and cars inside the camera's frustum
+  public let nearestHack: Float;  // metres from V to the nearest hacked thing (-1: none)
+  // 1.16.15 (MassOverrideInk, MassOverrideLights)
+  public let inkLayers: Int32;       // world ink layers whose root goes on the beat
+  public let worldWidgets: Int32;    // world widgets (wall and machine screens) on the beat
+  public let inkNames: String;       // every ink layer by name, the ones taken marked *
+  public let lightComponents: Int32; // light components on hacked devices that pulse
 }
 
 // The area a target is in. There is no coordinate-to-district lookup on 2.31 --
@@ -460,12 +840,19 @@ public class MassOverrideCache extends ScriptableService {
 // corner instead of reaching through walls, and it stops on a probe budget rather
 // than on distance alone.
 public class MassOverrideProbe {
-  // Reach of one probe. Smaller than the old single sweep, because the probes chain.
+  // Reach of one chained probe.
   public static func Reach() -> Float { return 25.0; }
+
+  // Reach of the FIRST probe, from V: much wider than a chained one. A cast measured
+  // on a live session found only 16 candidates -- vehicles and people, not one screen
+  // or light -- because every probe started at 25 m and the fill only grows through
+  // devices it has already found. The opening sweep has to be wide enough to reach the
+  // street's lamps and billboards on its own.
+  public static func FirstReach() -> Float { return 70.0; }
 
   // Probes per cast. Each is one targeting query that returns its whole
   // neighbourhood, so this bounds the work a cast can do.
-  public static func MaxProbes() -> Int32 { return 64; }
+  public static func MaxProbes() -> Int32 { return 128; }
 
   // Entry point. A block whose devices are already cached costs one query for the
   // people and nothing else.
@@ -489,14 +876,97 @@ public class MassOverrideProbe {
         }
         i += 1;
       }
-      return out;
+      return MassOverrideProbe.WithRegistered(player, out, cap, stats);
     }
     let probed: array<ref<MassOverrideTarget>> = MassOverrideProbe.Fill(player, cap, true, stats);
     if IsDefined(cache) {
       cache.Remember(key, cell, probed);
       stats.blocks = cache.AreaCount();
     }
-    return probed;
+    return MassOverrideProbe.WithRegistered(player, probed, cap, stats);
+  }
+
+  // Adds the devices the attach registry holds near V that the probe did not find:
+  // the TVs, billboards, signs and lamps no targeting query returns. They are not
+  // cached per area, because the registry already is the current list.
+  public static func WithRegistered(player: ref<PlayerPuppet>, targets: array<ref<MassOverrideTarget>>, cap: Int32, stats: ref<MassOverrideStats>) -> array<ref<MassOverrideTarget>> {
+    let out: array<ref<MassOverrideTarget>> = targets;
+    let game: GameInstance = player.GetGame();
+    let registry: ref<MassOverrideRegistry> = MassOverrideRegistry.Get(game);
+    if !IsDefined(registry) {
+      stats.registry = -1;
+      return out;
+    }
+    stats.registry = registry.Size();
+    stats.attachEvents = registry.AttachEvents();
+    let ids: array<EntityID> = registry.Near(game, player.GetWorldPosition(), MassOverrideRegistry.Reach());
+    let i: Int32 = 0;
+    while i < ArraySize(ids) && ArraySize(out) < cap {
+      if !MassOverrideProbe.Has(out, ids[i]) {
+        let object: ref<GameObject> = GameInstance.FindEntityByID(game, ids[i]) as GameObject;
+        if IsDefined(object) {
+          ArrayPush(out, MassOverrideProbe.DeviceTarget(object, stats));
+          stats.registryNear += 1;
+        }
+      }
+      i += 1;
+    }
+    return out;
+  }
+
+  // A device as a target, its state read now, before anything is switched.
+  public static func DeviceTarget(device: ref<GameObject>, stats: ref<MassOverrideStats>) -> ref<MassOverrideTarget> {
+    let target: ref<MassOverrideTarget> = new MassOverrideTarget();
+    target.entityId = device.GetEntityID();
+    target.kind = MassOverrideEffects.KindOf(device);
+    target.screenWasOn = MassOverrideEffects.ScreenOn(device);
+    target.lightWasOn = MassOverrideEffects.LightOn(device);
+    target.label = NameToString(device.GetClassName());
+    target.area = MassOverrideArea.Cell(device.GetWorldPosition());
+    stats.devices += 1;
+    if target.kind == MassOverrideKind.Vehicle() {
+      stats.vehicles += 1;
+    } else {
+      if target.kind == MassOverrideKind.Screen() {
+        stats.screens += 1;
+      } else {
+        stats.lights += 1;
+      }
+    }
+    return target;
+  }
+
+  // Devices per class, for the report: "VendingMachine:25,TrafficLight:8". The counts
+  // say what a cast actually had to work with, which the kind totals cannot.
+  public static func Classes(targets: array<ref<MassOverrideTarget>>) -> String {
+    let names: array<String>;
+    let counts: array<Int32>;
+    let i: Int32 = 0;
+    while i < ArraySize(targets) {
+      if targets[i].kind != MassOverrideKind.Person() {
+        let found: Int32 = -1;
+        let j: Int32 = 0;
+        while j < ArraySize(names) {
+          if Equals(names[j], targets[i].label) { found = j; }
+          j += 1;
+        }
+        if found < 0 {
+          ArrayPush(names, targets[i].label);
+          ArrayPush(counts, 1);
+        } else {
+          counts[found] = counts[found] + 1;
+        }
+      }
+      i += 1;
+    }
+    let out: String = "";
+    let k: Int32 = 0;
+    while k < ArraySize(names) {
+      if k > 0 { out += ","; }
+      out += names[k] + ":" + ToString(counts[k]);
+      k += 1;
+    }
+    return out;
   }
 
   public static func Has(targets: array<ref<MassOverrideTarget>>, id: EntityID) -> Bool {
@@ -517,8 +987,10 @@ public class MassOverrideProbe {
     ArrayPush(frontier, player.GetEntityID());
     let next: Int32 = 0;
     let probes: Int32 = 0;
+    let playerId: EntityID = player.GetEntityID();
     while next < ArraySize(frontier) && probes < MassOverrideProbe.MaxProbes() && ArraySize(out) < cap {
-      let anchor: ref<GameObject> = GameInstance.FindEntityByID(player.GetGame(), frontier[next]) as GameObject;
+      let anchorId: EntityID = frontier[next];
+      let anchor: ref<GameObject> = GameInstance.FindEntityByID(player.GetGame(), anchorId) as GameObject;
       next += 1;
       probes += 1;
       stats.probes += 1;
@@ -529,7 +1001,8 @@ public class MassOverrideProbe {
           TSFMV.Obj_Puppet | TSFMV.Obj_Device | TSFMV.Obj_Other |
           TSFMV.Att_Friendly | TSFMV.Att_Hostile | TSFMV.Att_Neutral |
           TSFMV.St_Alive | TSFMV.St_TurnedOn | TSFMV.St_TurnedOff);
-        query.maxDistance = MassOverrideProbe.Reach();
+        query.maxDistance = Equals(anchorId, playerId)
+          ? MassOverrideProbe.FirstReach() : MassOverrideProbe.Reach();
         query.filterObjectByDistance = true;
         query.includeSecondaryTargets = true;
         query.ignoreInstigator = true;
@@ -553,6 +1026,12 @@ public class MassOverrideProbe {
                   person.area = MassOverrideArea.Cell(npc.GetWorldPosition());
                   stats.people += 1;
                   ArrayPush(out, person);
+                  // People seed the fill too. Only devices used to grow the frontier,
+                  // so a street with few devices stopped after one or two probes and a
+                  // 70 m cast returned 34 entities: nothing to see.
+                  if ArraySize(frontier) < MassOverrideProbe.MaxProbes() {
+                    ArrayPush(frontier, npc.GetEntityID());
+                  }
                 }
               } else if includeDevices {
                 let device: ref<GameObject> = entity as GameObject;
@@ -722,17 +1201,66 @@ public class MassOverrideEffects {
     }
   }
 
-  // Every target back to the state it was found in.
+  // Every device this cast cut, given its power back through its own controller,
+  // which restores the state it cached and lets the device switch its own screens
+  // and lights back on -- a traffic light comes back on red or green, not all three.
+  // People and cars are the revert's.
   public static func RestoreAll(game: GameInstance, targets: array<ref<MassOverrideTarget>>) -> Void {
-    let sink: ref<MassOverrideStats> = new MassOverrideStats();
     let i: Int32 = 0;
     while i < ArraySize(targets) {
-      if targets[i].kind != 0 {
-        let object: ref<GameObject> = GameInstance.FindEntityByID(game, targets[i].entityId) as GameObject;
-        MassOverrideEffects.Switch(object, targets[i].screenWasOn, targets[i].lightWasOn, sink);
+      let target: ref<MassOverrideTarget> = targets[i];
+      if target.cut {
+        MassOverridePower.RestoreTarget(target, game);
       }
       i += 1;
     }
+  }
+
+  // One beat of the blink: every listed device loses its power or gets it back.
+  public static func Beat(game: GameInstance, targets: array<ref<MassOverrideTarget>>, lit: Bool) -> Void {
+    let i: Int32 = 0;
+    while i < ArraySize(targets) {
+      let target: ref<MassOverrideTarget> = targets[i];
+      if target.kind != MassOverrideKind.Person() && target.kind != MassOverrideKind.Vehicle() {
+        let object: ref<GameObject> = GameInstance.FindEntityByID(game, target.entityId) as GameObject;
+        if lit {
+          if target.cut {
+            MassOverridePower.RestoreTarget(target, game);
+          }
+        } else {
+          if MassOverridePower.Allowed(object) {
+            MassOverridePower.CutTarget(target, object);
+          }
+        }
+      }
+      i += 1;
+    }
+  }
+
+  // The part of a blackout that does not hold itself: see MassOverridePower.NeedsHold.
+  public static func HoldDark(game: GameInstance, targets: array<ref<MassOverrideTarget>>) -> Void {
+    let i: Int32 = 0;
+    while i < ArraySize(targets) {
+      if targets[i].cut {
+        let object: ref<GameObject> = GameInstance.FindEntityByID(game, targets[i].entityId) as GameObject;
+        if MassOverridePower.NeedsHold(object) {
+          MassOverrideEffects.LightsOff(object);
+        }
+      }
+      i += 1;
+    }
+  }
+
+  // The device's own lights-off: the event trafficLight.script's TurnOffLights queues.
+  // It switches the lights' state only, never the components, so the device can light
+  // them again itself when its power comes back. (Disabling the components, as the
+  // component pass does, would leave them dark even then.)
+  public static func LightsOff(target: ref<GameObject>) -> Void {
+    if !IsDefined(target) { return; }
+    let evt: ref<ToggleLightEvent> = new ToggleLightEvent();
+    evt.toggle = false;
+    evt.loop = false;
+    target.QueueEvent(evt);
   }
 
   // A screen is any world widget component. A light is a gameLightComponent,
@@ -810,82 +1338,1138 @@ public class MassOverrideEffects {
   }
 }
 
-// Blink mode: pulses everything it was given until the duration runs out, then
-// leaves the block lit. Each pulse re-arms itself on the delay system, so a
-// dismissed Capri does not stop it.
+// One cast's beat, shared by its pulses and its revert. The pulses are chained one
+// delay after another, so over thirty seconds they drift by frames; a pulse that
+// landed after the revert would switch a light the revert had just put back, or
+// leave the city request standing. The revert marks the run ended, and no pulse
+// switches anything after `endAt` either.
+public class MassOverrideRun {
+  public let ended: Bool;
+  public let endAt: Float;
+  public let ink: array<ref<MassOverrideInkTarget>>;      // billboards and screens (MassOverrideInk)
+  public let lights: array<ref<MassOverrideLightTarget>>; // light components (MassOverrideLights)
+
+  public static func Start(game: GameInstance, seconds: Float) -> ref<MassOverrideRun> {
+    let run: ref<MassOverrideRun> = new MassOverrideRun();
+    run.endAt = EngineTime.ToFloat(GameInstance.GetSimTime(game)) + seconds - 0.2;
+    return run;
+  }
+
+  public func Live(game: GameInstance) -> Bool {
+    if this.ended { return false; }
+    return EngineTime.ToFloat(GameInstance.GetSimTime(game)) < this.endAt;
+  }
+}
+
+// BILLBOARDS AND SCREENS. An ink root on the beat: its own opacity and tint saved at the
+// cast, then lit in the beat's colour or nearly gone, and put back at the revert.
+public class MassOverrideInkTarget {
+  public let widget: wref<inkWidget>;
+  public let opacity: Float;
+  public let tint: HDRColor;
+  public let source: Int32; // 0 = a world ink layer's root, 1 = a world widget's root
+}
+
+public class MassOverrideInk {
+  public static func Cap() -> Int32 { return 400; }
+
+  // A layer drawn into the world -- advertisements, world UI, fluff -- not over the
+  // screen: HUD, menus, notifications and loading screens are never touched.
+  public static func WorldLayer(name: String) -> Bool {
+    let lower: String = StrLower(name);
+    if StrContains(lower, "hud") || StrContains(lower, "menu") || StrContains(lower, "notification")
+        || StrContains(lower, "loading") || StrContains(lower, "photo") {
+      return false;
+    }
+    return StrContains(lower, "advert") || StrContains(lower, "world") || StrContains(lower, "fluff");
+  }
+
+  public static func Add(run: ref<MassOverrideRun>, widget: ref<inkWidget>, source: Int32) -> Bool {
+    if !IsDefined(run) || !IsDefined(widget) { return false; }
+    if ArraySize(run.ink) >= MassOverrideInk.Cap() { return false; }
+    let target: ref<MassOverrideInkTarget> = new MassOverrideInkTarget();
+    target.widget = widget;
+    target.opacity = widget.GetOpacity();
+    target.tint = widget.GetTintColor();
+    target.source = source;
+    ArrayPush(run.ink, target);
+    return true;
+  }
+
+  // Every world layer's root, then every world widget's root. Returns a line for the log
+  // naming every layer, so a layer that should have been taken can be found by name.
+  public static func Collect(run: ref<MassOverrideRun>, stats: ref<MassOverrideStats>) -> String {
+    let ink: ref<inkSystem> = GameInstance.GetInkSystem();
+    if !IsDefined(ink) { return "ink=missing"; }
+    let names: String = "";
+    let layers: array<ref<inkLayerWrapper>> = ink.GetLayers();
+    let i: Int32 = 0;
+    while i < ArraySize(layers) {
+      let layer: ref<inkLayerWrapper> = layers[i];
+      if IsDefined(layer) {
+        let name: String = NameToString(layer.GetLayerName());
+        let taken: Bool = false;
+        if MassOverrideInk.WorldLayer(name) {
+          let window: ref<inkWidget> = layer.GetVirtualWindow();
+          taken = MassOverrideInk.Add(run, window, 0);
+          if taken { stats.inkLayers += 1; }
+        }
+        if StrLen(names) > 0 { names += ","; }
+        names += name;
+        if taken { names += "*"; }
+      }
+      i += 1;
+    }
+    let widgets: array<wref<inkIGameController>> = ink.GetWorldWidgets();
+    let w: Int32 = 0;
+    while w < ArraySize(widgets) {
+      let controller: ref<inkIGameController> = widgets[w];
+      if IsDefined(controller) {
+        let root: ref<inkWidget> = controller.GetRootWidget();
+        if MassOverrideInk.Add(run, root, 1) { stats.worldWidgets += 1; }
+      }
+      w += 1;
+    }
+    stats.inkNames = names;
+    return "layers=" + ToString(ArraySize(layers)) + " [" + names + "] worldWidgets=" + ToString(ArraySize(widgets));
+  }
+
+  // The hack's colours, one per beat: red, cyan, magenta, acid green. Division and
+  // subtraction rather than a modulo, as elsewhere in these files.
+  public static func Pick(tick: Int32) -> Int32 {
+    let rounds: Int32 = tick / 4;
+    return tick - rounds * 4;
+  }
+
+  public static func Colour(tick: Int32) -> HDRColor {
+    let c: HDRColor;
+    c.Alpha = 1.0;
+    let pick: Int32 = MassOverrideInk.Pick(tick);
+    if pick == 0 { c.Red = 1.0; c.Green = 0.05; c.Blue = 0.1; }
+    if pick == 1 { c.Red = 0.0; c.Green = 1.0; c.Blue = 1.0; }
+    if pick == 2 { c.Red = 1.0; c.Green = 0.0; c.Blue = 1.0; }
+    if pick == 3 { c.Red = 0.35; c.Green = 1.0; c.Blue = 0.0; }
+    return c;
+  }
+
+  // One beat. Lit: its own opacity, in the beat's colour. Dark: nearly gone. With
+  // `chance` below 1.0 each root draws its own state (the blackout's flicker).
+  public static func Beat(run: ref<MassOverrideRun>, on: Bool, chance: Float, tick: Int32) -> Int32 {
+    if !IsDefined(run) { return 0; }
+    let colour: HDRColor = MassOverrideInk.Colour(tick);
+    let changed: Int32 = 0;
+    let i: Int32 = 0;
+    while i < ArraySize(run.ink) {
+      let target: ref<MassOverrideInkTarget> = run.ink[i];
+      let widget: ref<inkWidget> = target.widget;
+      if IsDefined(widget) {
+        let lit: Bool = on;
+        if chance < 1.0 {
+          lit = RandF() < chance;
+        }
+        if lit {
+          widget.SetOpacity(target.opacity);
+          widget.SetTintColor(colour);
+        } else {
+          widget.SetOpacity(target.opacity * 0.05);
+        }
+        changed += 1;
+      }
+      i += 1;
+    }
+    return changed;
+  }
+
+  public static func Restore(run: ref<MassOverrideRun>) -> Int32 {
+    if !IsDefined(run) { return 0; }
+    let restored: Int32 = 0;
+    let i: Int32 = 0;
+    while i < ArraySize(run.ink) {
+      let target: ref<MassOverrideInkTarget> = run.ink[i];
+      let widget: ref<inkWidget> = target.widget;
+      if IsDefined(widget) {
+        widget.SetOpacity(target.opacity);
+        widget.SetTintColor(target.tint);
+        restored += 1;
+      }
+      i += 1;
+    }
+    return restored;
+  }
+}
+
+// LIGHTS, component by component. Every gameLightComponent on a hacked device is
+// switched on the beat and recoloured with SetParameters -- what the game's own
+// ChangeLightEvent ends in (gameLightComponent.script) -- at three times its intensity,
+// so a lamp the timetable keeps off by day flashes red, cyan, magenta and green. A
+// light's emissive surface follows its component (materialZone), so the lamp heads,
+// signal heads and machine trims change, not only the light they cast.
+public class MassOverrideLightTarget {
+  public let light: wref<gameLightComponent>;
+  public let settings: gameLightSettings;
+  public let on: Bool;
+}
+
+public class MassOverrideLights {
+  public static func Cap() -> Int32 { return 600; }
+  public static func Boost() -> Float { return 3.0; }
+
+  public static func Collect(run: ref<MassOverrideRun>, object: ref<GameObject>) -> Int32 {
+    if !IsDefined(run) || !IsDefined(object) { return 0; }
+    let added: Int32 = 0;
+    let components: array<ref<IComponent>> = object.GetComponents();
+    let i: Int32 = 0;
+    while i < ArraySize(components) && ArraySize(run.lights) < MassOverrideLights.Cap() {
+      let light: ref<gameLightComponent> = components[i] as gameLightComponent;
+      if IsDefined(light) {
+        let target: ref<MassOverrideLightTarget> = new MassOverrideLightTarget();
+        target.light = light;
+        target.settings = light.GetCurrentSettings();
+        target.on = light.IsOn();
+        ArrayPush(run.lights, target);
+        added += 1;
+      }
+      i += 1;
+    }
+    return added;
+  }
+
+  public static func Colour(tick: Int32) -> Color {
+    let c: Color;
+    c.Alpha = Cast<Uint8>(255);
+    let pick: Int32 = MassOverrideInk.Pick(tick);
+    if pick == 0 { c.Red = Cast<Uint8>(255); c.Green = Cast<Uint8>(16); c.Blue = Cast<Uint8>(32); }
+    if pick == 1 { c.Red = Cast<Uint8>(0); c.Green = Cast<Uint8>(255); c.Blue = Cast<Uint8>(255); }
+    if pick == 2 { c.Red = Cast<Uint8>(255); c.Green = Cast<Uint8>(0); c.Blue = Cast<Uint8>(255); }
+    if pick == 3 { c.Red = Cast<Uint8>(90); c.Green = Cast<Uint8>(255); c.Blue = Cast<Uint8>(0); }
+    return c;
+  }
+
+  public static func Beat(run: ref<MassOverrideRun>, on: Bool, chance: Float, tick: Int32) -> Int32 {
+    if !IsDefined(run) { return 0; }
+    let colour: Color = MassOverrideLights.Colour(tick);
+    let changed: Int32 = 0;
+    let i: Int32 = 0;
+    while i < ArraySize(run.lights) {
+      let target: ref<MassOverrideLightTarget> = run.lights[i];
+      let light: ref<gameLightComponent> = target.light;
+      if IsDefined(light) {
+        let lit: Bool = on;
+        if chance < 1.0 {
+          lit = RandF() < chance;
+        }
+        let settings: gameLightSettings = target.settings;
+        if lit {
+          settings.color = colour;
+          settings.strength = 1.0;
+          settings.intensity = target.settings.intensity * MassOverrideLights.Boost();
+          light.ToggleLight(true);
+        } else {
+          settings.strength = 0.0;
+        }
+        light.SetParameters(settings, 0.05);
+        if !lit {
+          light.ToggleLight(false);
+        }
+        changed += 1;
+      }
+      i += 1;
+    }
+    return changed;
+  }
+
+  public static func Restore(run: ref<MassOverrideRun>) -> Int32 {
+    if !IsDefined(run) { return 0; }
+    let restored: Int32 = 0;
+    let i: Int32 = 0;
+    while i < ArraySize(run.lights) {
+      let target: ref<MassOverrideLightTarget> = run.lights[i];
+      let light: ref<gameLightComponent> = target.light;
+      if IsDefined(light) {
+        light.SetParameters(target.settings, 0.1);
+        light.ToggleLight(target.on);
+        restored += 1;
+      }
+      i += 1;
+    }
+    return restored;
+  }
+}
+
+// V'S SCREEN. The glitch the game plays over V's view when a scene is fast-forwarded
+// (player.script: transition_glitch_loop), started as the wave goes out and stopped by
+// this callback a moment later.
+public class MassOverrideFx extends DelayCallback {
+  public let player: wref<PlayerPuppet>;
+
+  public static func Name() -> CName { return n"transition_glitch_loop"; }
+
+  public static func Burst(game: GameInstance, player: ref<PlayerPuppet>, seconds: Float) -> Bool {
+    if !IsDefined(player) { return false; }
+    GameObjectEffectHelper.StartEffectEvent(player, MassOverrideFx.Name(), false);
+    let stop: ref<MassOverrideFx> = new MassOverrideFx();
+    stop.player = player;
+    GameInstance.GetDelaySystem(game).DelayCallback(stop, seconds, false);
+    return true;
+  }
+
+  public func Call() -> Void {
+    let player: ref<PlayerPuppet> = this.player;
+    if IsDefined(player) {
+      GameObjectEffectHelper.StopEffectEvent(player, MassOverrideFx.Name());
+    }
+  }
+}
+
+// Blink mode: every strobed light and the city's own lights flip together twice a
+// second for the whole duration, while the machines and screens glitch. Each pulse
+// arms the next on the delay system, so a dismissed Capri does not stop it. The panic
+// and the cars' Accelerate hack are renewed every few seconds.
 public class MassOverridePulse extends DelayCallback {
   public let game: GameInstance;
+  public let player: wref<PlayerPuppet>;
   public let targets: array<ref<MassOverrideTarget>>;
-  public let cyclesLeft: Int32;
+  public let run: ref<MassOverrideRun>;
+  public let tick: Int32;
   public let lit: Bool; // the state this pulse switches to
 
-  public static func Interval() -> Float { return 1.0; }
+  // Twice a second. The switches go through the devices' own controllers, which take
+  // a frame or two, and the city's lamps follow with their authored stagger; a faster
+  // strobe blurs into a flicker nobody reads as a beat.
+  public static func Interval() -> Float { return 0.5; }
 
   public func Call() -> Void {
-    MassOverrideEffects.SetAll(this.game, this.targets, this.lit);
-    if this.cyclesLeft > 1 {
-      let next: ref<MassOverridePulse> = new MassOverridePulse();
-      next.game = this.game;
-      next.targets = this.targets;
-      next.cyclesLeft = this.cyclesLeft - 1;
-      next.lit = !this.lit;
-      GameInstance.GetDelaySystem(this.game).DelayCallback(next, MassOverridePulse.Interval(), false);
+    if !IsDefined(this.run) || !this.run.Live(this.game) { return; }
+    MassOverrideHack.Beat(this.game, this.targets, this.lit, 1.0);
+    MassOverrideInk.Beat(this.run, this.lit, 1.0, this.tick);
+    MassOverrideLights.Beat(this.run, this.lit, 1.0, this.tick);
+    if this.lit {
+      MassOverrideCity.Lit(this.game);
     } else {
-      // Whatever the last pulse did, end where the block started, not lit: a screen
-      // that was off before the cast stays off.
-      MassOverrideEffects.RestoreAll(this.game, this.targets);
+      MassOverrideCity.Dark(this.game);
     }
+    if MassOverridePeople.Due(this.tick, MassOverridePulse.Interval()) {
+      let player: ref<PlayerPuppet> = this.player;
+      MassOverridePeople.Panic(player);
+      MassOverrideCars.Rehack(this.game, this.targets);
+    }
+    let next: ref<MassOverridePulse> = new MassOverridePulse();
+    next.game = this.game;
+    next.player = this.player;
+    next.targets = this.targets;
+    next.run = this.run;
+    next.tick = this.tick + 1;
+    next.lit = !this.lit;
+    GameInstance.GetDelaySystem(this.game).DelayCallback(next, MassOverridePulse.Interval(), false);
   }
 }
 
-// Blackout mode: re-asserts dark on a timer instead of switching once.
-//
-// A single Toggle(false) is not enough. A device's own controller keeps its screen
-// and lights in step with its state, so it switches its component back on within a
-// frame or two -- which is exactly why the blink survived (it re-asserts twice a
-// second) while the one-shot blackout looked like nothing had happened at all.
-// This holds the block dark for the whole duration and then lets the revert light
-// it back up.
+// Blackout mode: the power failing. Four times a second each strobed light draws its
+// own state, mostly dark, and the city's lights flicker once a second the same way;
+// the machines and screens glitch, the panic and the cars' hack are renewed. Like
+// the pulse it stops before the revert, which puts every light back.
 public class MassOverrideHold extends DelayCallback {
   public let game: GameInstance;
+  public let player: wref<PlayerPuppet>;
   public let targets: array<ref<MassOverrideTarget>>;
-  public let cyclesLeft: Int32;
+  public let run: ref<MassOverrideRun>;
+  public let tick: Int32;
 
-  public static func Interval() -> Float { return 1.0; }
+  public static func Interval() -> Float { return 0.25; }
+  // How often a light is lit on a given beat: low, so the street reads as failing.
+  public static func Chance() -> Float { return 0.3; }
 
   public func Call() -> Void {
-    MassOverrideEffects.SetAll(this.game, this.targets, false);
-    if this.cyclesLeft > 1 {
-      let next: ref<MassOverrideHold> = new MassOverrideHold();
-      next.game = this.game;
-      next.targets = this.targets;
-      next.cyclesLeft = this.cyclesLeft - 1;
-      GameInstance.GetDelaySystem(this.game).DelayCallback(next, MassOverrideHold.Interval(), false);
+    if !IsDefined(this.run) || !this.run.Live(this.game) { return; }
+    MassOverrideHack.Beat(this.game, this.targets, false, MassOverrideHold.Chance());
+    MassOverrideInk.Beat(this.run, false, MassOverrideHold.Chance(), this.tick);
+    MassOverrideLights.Beat(this.run, false, MassOverrideHold.Chance(), this.tick);
+    let rounds: Int32 = this.tick / 4;
+    if this.tick - rounds * 4 == 0 {
+      if RandF() < MassOverrideHold.Chance() {
+        MassOverrideCity.Lit(this.game);
+      } else {
+        MassOverrideCity.Dark(this.game);
+      }
     }
+    if MassOverridePeople.Due(this.tick, MassOverrideHold.Interval()) {
+      let player: ref<PlayerPuppet> = this.player;
+      MassOverridePeople.Panic(player);
+      MassOverrideCars.Rehack(this.game, this.targets);
+    }
+    let next: ref<MassOverrideHold> = new MassOverrideHold();
+    next.game = this.game;
+    next.player = this.player;
+    next.targets = this.targets;
+    next.run = this.run;
+    next.tick = this.tick + 1;
+    GameInstance.GetDelaySystem(this.game).DelayCallback(next, MassOverrideHold.Interval(), false);
   }
 }
 
-// Puts everything back when the effect's duration ends. Dismissing Capri does
-// not end it early, so this runs on the delay system rather than on Capri.
+// Puts everything back when the effect's duration ends. Dismissing Capri does not
+// end it early, so this runs on the delay system rather than on Capri. Each target
+// gets back exactly what this cast did to it, through its own controller, which is
+// there whether or not the device is still streamed in: the glitch stopped, the
+// light set to the state it had at the cast, the car alarm off, the attitude
+// neutral; and the city light request is removed so the timetable, the weather and
+// quests decide again. The EMP sparks and the cars' Accelerate hack end by themselves.
 public class MassOverrideRevert extends DelayCallback {
   public let game: GameInstance;
   public let player: wref<PlayerPuppet>;
   public let targets: array<ref<MassOverrideTarget>>;
+  public let playerId: String;
+  public let run: ref<MassOverrideRun>;
 
   public func Call() -> Void {
+    if IsDefined(this.run) { this.run.ended = true; }
     let player: ref<PlayerPuppet> = this.player;
-    let sink: ref<MassOverrideStats> = new MassOverrideStats();
+    let inkBack: Int32 = MassOverrideInk.Restore(this.run);
+    let lightsBack: Int32 = MassOverrideLights.Restore(this.run);
+    MassOverrideFx.Burst(this.game, player, 0.6);
+    let released: Bool = MassOverrideCity.Release(this.game);
+    let unglitched: Int32 = 0;
+    let relit: Int32 = 0;
+    let restored: Int32 = 0;
+    let silenced: Int32 = 0;
+    let calmed: Int32 = 0;
     let i: Int32 = 0;
     while i < ArraySize(this.targets) {
       let target: ref<MassOverrideTarget> = this.targets[i];
       let object: ref<GameObject> = GameInstance.FindEntityByID(this.game, target.entityId) as GameObject;
-      if target.kind == 0 {
+      if target.kind == MassOverrideKind.Person() {
         MassOverrideEffects.SetHostile(object as NPCPuppet, player, false);
+        calmed += 1;
       } else {
-        // Each part back to the state it had before the cast, rather than on.
-        MassOverrideEffects.Switch(object, target.screenWasOn, target.lightWasOn, sink);
+        if target.kind == MassOverrideKind.Vehicle() {
+          if target.alarm {
+            MassOverrideCars.Silence(object as VehicleObject);
+            silenced += 1;
+          }
+        } else {
+          if target.glitch && MassOverrideHack.Unglitch(target, this.game) {
+            unglitched += 1;
+          }
+          if target.strobe && MassOverrideHack.StrobeRestore(target, this.game) {
+            relit += 1;
+          }
+          if target.cut && MassOverridePower.RestoreTarget(target, this.game) {
+            restored += 1;
+          }
+        }
       }
       i += 1;
     }
+    MassOverrideLog.Write("revert ink=" + ToString(inkBack) + " lights=" + ToString(lightsBack) + " unglitched=" + ToString(unglitched) + " relit=" + ToString(relit) + " restored=" + ToString(restored)
+      + " silenced=" + ToString(silenced) + " calmed=" + ToString(calmed) + " city=" + (released ? "released" : "missing"));
+    MassOverrideCastPost.Report(this.game, "{\"phase\":\"revert\",\"playerId\":" + MassOverrideLog.Quote(this.playerId)
+      + ",\"build\":\"" + MassOverrideBuild.Version() + "\""
+      + ",\"cityReleased\":" + (released ? "true" : "false")
+      + ",\"ink\":" + ToString(inkBack)
+      + ",\"lightComponents\":" + ToString(lightsBack)
+      + ",\"unglitched\":" + ToString(unglitched)
+      + ",\"relit\":" + ToString(relit)
+      + ",\"restored\":" + ToString(restored)
+      + ",\"silenced\":" + ToString(silenced)
+      + ",\"calmed\":" + ToString(calmed) + "}");
+    MassOverrideLog.Flush(this.game, this.playerId, "revert");
+  }
+}
+
+// What actually took, read back from the devices' controllers and the cars. The cast's
+// own report can only say what was asked: every switch runs on the device's next
+// update. "verify" is read two seconds into the cast, "settled" two seconds after the
+// revert (nothing should still glitch, every light should be back as it was, no alarm
+// ringing) and "final" a few seconds later, after the last picture.
+public class MassOverrideVerify extends DelayCallback {
+  public let game: GameInstance;
+  public let playerId: String;
+  public let phase: String;
+  public let mode: String;
+  public let targets: array<ref<MassOverrideTarget>>;
+
+  public static func Delay() -> Float { return 2.0; }
+
+  public func Call() -> Void {
+    let glitched: Int32 = 0;
+    let glitching: Int32 = 0;
+    let emp: Int32 = 0;
+    let strobed: Int32 = 0;
+    let strobeOn: Int32 = 0;
+    let strobeAsBefore: Int32 = 0;
+    let cars: Int32 = 0;
+    let accelerating: Int32 = 0;
+    let panicDriving: Int32 = 0;
+    let alarms: Int32 = 0;
+    let alarmsOn: Int32 = 0;
+    let gone: Int32 = 0;
+    let i: Int32 = 0;
+    while i < ArraySize(this.targets) {
+      let target: ref<MassOverrideTarget> = this.targets[i];
+      let object: ref<GameObject> = GameInstance.FindEntityByID(this.game, target.entityId) as GameObject;
+      if target.glitch {
+        glitched += 1;
+        if MassOverrideHack.Glitching(target, this.game) { glitching += 1; }
+      }
+      if target.emp { emp += 1; }
+      if target.strobe {
+        strobed += 1;
+        let on: Bool = MassOverrideHack.IsOn(target, this.game);
+        if on { strobeOn += 1; }
+        if on == target.stateOn { strobeAsBefore += 1; }
+      }
+      if target.hacked {
+        cars += 1;
+        let vehicle: ref<VehicleObject> = object as VehicleObject;
+        if IsDefined(vehicle) {
+          if vehicle.IsVehicleAccelerateQuickhackActive() { accelerating += 1; }
+          if vehicle.IsPerformingPanicDriving() { panicDriving += 1; }
+        } else {
+          gone += 1;
+        }
+      }
+      if target.alarm {
+        alarms += 1;
+        if IsDefined(object) {
+          if MassOverrideCars.Ringing(object as VehicleObject) { alarmsOn += 1; }
+        } else {
+          if !target.hacked { gone += 1; }
+        }
+      }
+      i += 1;
+    }
+    let city: String = MassOverrideCity.StateName(this.game);
+    MassOverrideLog.Write(this.phase + " city=" + city + " glitching=" + ToString(glitching) + "/" + ToString(glitched)
+      + " strobeOn=" + ToString(strobeOn) + "/" + ToString(strobed) + " asBefore=" + ToString(strobeAsBefore)
+      + " accelerating=" + ToString(accelerating) + "/" + ToString(cars) + " panicDriving=" + ToString(panicDriving)
+      + " alarmsOn=" + ToString(alarmsOn) + "/" + ToString(alarms) + " gone=" + ToString(gone));
+    MassOverrideCastPost.Report(this.game, "{\"phase\":\"" + this.phase + "\",\"playerId\":" + MassOverrideLog.Quote(this.playerId)
+      + ",\"build\":\"" + MassOverrideBuild.Version() + "\""
+      + ",\"mode\":\"" + this.mode + "\""
+      + ",\"city\":\"" + city + "\""
+      + ",\"glitched\":" + ToString(glitched)
+      + ",\"glitching\":" + ToString(glitching)
+      + ",\"emp\":" + ToString(emp)
+      + ",\"strobed\":" + ToString(strobed)
+      + ",\"strobeOn\":" + ToString(strobeOn)
+      + ",\"strobeAsBefore\":" + ToString(strobeAsBefore)
+      + ",\"cars\":" + ToString(cars)
+      + ",\"accelerating\":" + ToString(accelerating)
+      + ",\"panicDriving\":" + ToString(panicDriving)
+      + ",\"alarms\":" + ToString(alarms)
+      + ",\"alarmsOn\":" + ToString(alarmsOn)
+      + ",\"gone\":" + ToString(gone) + "}");
+    MassOverrideLog.Flush(this.game, this.playerId, this.phase);
+  }
+}
+
+// The build every report names, so a report can never be mistaken for one from the
+// copy a running game loaded before an update.
+public class MassOverrideBuild {
+  public static func Version() -> String { return "1.16.15"; }
+}
+
+// CITY LIGHTS. The street lamps, building lights and neon that come on at dusk are not
+// reachable one by one: they are ElectricLight devices wired to fuses, and the fuses
+// answer to the City Light System (core/systems/cityLightSystem.script in the REDmod
+// sources that ship with the game). That system takes a forced state from anyone --
+// the rain listener asks for ForcedON, quests ask for ForcedOFF -- on a priority stack,
+// and each fuse then walks its own lights with the authored stagger. Mass Override
+// asks under its own source name and removes exactly that entry at the revert
+// (DEFAULT for the same source), so the weather's or a quest's own request is left as
+// it was. savable is false: a save taken mid-cast never loads into a dark city.
+// Only lights that are on can go out. In daylight the timetable has them off already,
+// which is why every report carries the in-game hour.
+public class MassOverrideCity {
+  public static func Source() -> CName { return n"CapriMassOverride"; }
+
+  public static func System(game: GameInstance) -> ref<CityLightSystem> {
+    return GameInstance.GetScriptableSystemsContainer(game).Get(n"CityLightSystem") as CityLightSystem;
+  }
+
+  public static func Force(game: GameInstance, state: ECLSForcedState) -> Bool {
+    let system: ref<CityLightSystem> = MassOverrideCity.System(game);
+    if !IsDefined(system) { return false; }
+    let request: ref<ForceCLSStateRequest> = new ForceCLSStateRequest();
+    request.state = state;
+    request.sourceName = MassOverrideCity.Source();
+    request.priority = EPriority.VeryHigh;
+    request.removePreviousRequests = true;
+    request.savable = false;
+    system.QueueRequest(request);
+    return true;
+  }
+
+  public static func Dark(game: GameInstance) -> Bool {
+    return MassOverrideCity.Force(game, ECLSForcedState.ForcedOFF);
+  }
+
+  public static func Lit(game: GameInstance) -> Bool {
+    return MassOverrideCity.Force(game, ECLSForcedState.ForcedON);
+  }
+
+  // Removes this source's request only; whatever else is on the stack takes over.
+  public static func Release(game: GameInstance) -> Bool {
+    return MassOverrideCity.Force(game, ECLSForcedState.DEFAULT);
+  }
+
+  public static func StateName(game: GameInstance) -> String {
+    let system: ref<CityLightSystem> = MassOverrideCity.System(game);
+    if !IsDefined(system) { return "missing"; }
+    let state: ECLSForcedState = system.GetState();
+    if Equals(state, ECLSForcedState.ForcedOFF) { return "forcedOff"; }
+    if Equals(state, ECLSForcedState.ForcedON) { return "forcedOn"; }
+    return "default";
+  }
+
+  public static func Fuses(game: GameInstance) -> Int32 {
+    let system: ref<CityLightSystem> = MassOverrideCity.System(game);
+    if !IsDefined(system) { return -1; }
+    return system.GetFusesCount();
+  }
+
+  public static func Lights(game: GameInstance) -> Int32 {
+    let system: ref<CityLightSystem> = MassOverrideCity.System(game);
+    if !IsDefined(system) { return -1; }
+    return system.GetLightsCount();
+  }
+
+  public static func Hour(game: GameInstance) -> Int32 {
+    return GameTime.Hours(GameInstance.GetTimeSystem(game).GetGameTime());
+  }
+}
+
+// SCREENS AND DEVICE LIGHTS go dark the way a fuse-box overload darkens them: the
+// device's own controller is sent SetDeviceUnpowered (scriptableDeviceBasePS.script),
+// which caches the state it was in, sets UNPOWERED and has the device run CutPower ->
+// TurnOffDevice -- the same screen and light switches the old component pass made,
+// but owned by the device, so its controller stops switching them back on a frame
+// later. SetDevicePowered puts back the cached state, ON or OFF, and the device
+// switches its own screens and lights to match. Nothing touches the components
+// directly any more: a light component disabled from outside stays dark even after
+// its device turns it back on.
+// Only classes whose power-off is purely visual are listed: doors, gates, terminals,
+// cameras, turrets, loot and traps are found and reported, and left alone.
+public class MassOverridePower {
+  public static func Allowed(object: ref<GameObject>) -> Bool {
+    if !IsDefined(object) { return false; }
+    if IsDefined(object as VendingMachine) { return true; }
+    if IsDefined(object as TV) { return true; }
+    if IsDefined(object as LcdScreen) { return true; }
+    if IsDefined(object as BillboardDevice) { return true; }
+    if IsDefined(object as InteractiveAd) { return true; }
+    if IsDefined(object as AnimatedSign) { return true; }
+    if IsDefined(object as InteractiveSign) { return true; }
+    if IsDefined(object as ArcadeMachine) { return true; }
+    if IsDefined(object as Jukebox) { return true; }
+    if IsDefined(object as Radio) { return true; }
+    if IsDefined(object as Speaker) { return true; }
+    if IsDefined(object as ElectricLight) { return true; }
+    if IsDefined(object as BlindingLight) { return true; }
+    if IsDefined(object as TrafficLight) { return true; }
+    return false;
+  }
+
+  public static func Controller(object: ref<GameObject>) -> ref<ScriptableDeviceComponentPS> {
+    let device: ref<Device> = object as Device;
+    if !IsDefined(device) { return null; }
+    return device.GetDevicePS();
+  }
+
+  // True when a power cut was sent. A device that is broken, or already without
+  // power, is left as it is and is not restored later either.
+  public static func Cut(object: ref<GameObject>) -> Bool {
+    let ps: ref<ScriptableDeviceComponentPS> = MassOverridePower.Controller(object);
+    if !IsDefined(ps) { return false; }
+    if ps.IsDisabled() || ps.IsUnpowered() { return false; }
+    ps.ExecutePSAction(ps.ActionSetDeviceUnpowered());
+    return true;
+  }
+
+  public static func Restore(object: ref<GameObject>) -> Bool {
+    let ps: ref<ScriptableDeviceComponentPS> = MassOverridePower.Controller(object);
+    if !IsDefined(ps) { return false; }
+    if !ps.IsUnpowered() { return false; }
+    ps.ExecutePSAction(ps.ActionSetDevicePowered());
+    return true;
+  }
+
+  // The cut, remembered on the target with the controller it went to (see target.ps).
+  public static func CutTarget(target: ref<MassOverrideTarget>, object: ref<GameObject>) -> Bool {
+    let ps: ref<ScriptableDeviceComponentPS> = MassOverridePower.Controller(object);
+    if !IsDefined(ps) { return false; }
+    if ps.IsDisabled() || ps.IsUnpowered() { return false; }
+    ps.ExecutePSAction(ps.ActionSetDeviceUnpowered());
+    target.cut = true;
+    target.ps = ps;
+    return true;
+  }
+
+  // Power back through the controller the cast cut, which does not need the device to be
+  // streamed in: the controller is persistent, and a device that attaches later reads
+  // its state from it.
+  public static func RestoreTarget(target: ref<MassOverrideTarget>, game: GameInstance) -> Bool {
+    let ps: ref<ScriptableDeviceComponentPS> = target.ps;
+    if !IsDefined(ps) {
+      ps = MassOverridePower.Controller(GameInstance.FindEntityByID(game, target.entityId) as GameObject);
+    }
+    if !IsDefined(ps) { return false; }
+    if !ps.IsUnpowered() { return false; }
+    ps.ExecutePSAction(ps.ActionSetDevicePowered());
+    return true;
+  }
+
+  public static func TargetIsCut(target: ref<MassOverrideTarget>, game: GameInstance) -> Bool {
+    let ps: ref<ScriptableDeviceComponentPS> = target.ps;
+    if !IsDefined(ps) {
+      ps = MassOverridePower.Controller(GameInstance.FindEntityByID(game, target.entityId) as GameObject);
+    }
+    if !IsDefined(ps) { return false; }
+    return ps.IsUnpowered();
+  }
+
+  public static func IsCut(object: ref<GameObject>) -> Bool {
+    let ps: ref<ScriptableDeviceComponentPS> = MassOverridePower.Controller(object);
+    if !IsDefined(ps) { return false; }
+    return ps.IsUnpowered();
+  }
+
+  // Traffic lights are the one device the cut does not keep dark: the traffic
+  // system's colour change re-lights the bulbs without looking at the device state
+  // (trafficLight.script: OnTrafficLightChangeEvent), so the hold re-darkens them.
+  public static func NeedsHold(object: ref<GameObject>) -> Bool {
+    return IsDefined(object as TrafficLight);
+  }
+}
+
+// HACKS. What V's own quickhacks do to a device, sent through the device's controller
+// so the device plays it the way the game does (cyberpunk/devices in the REDmod
+// sources). QuestStartGlitch -> Device.OnQuestStartGlitch -> StartGlitching, which on a
+// vending machine is HackedEffect (cans thrown out) + AdvertGlitch + the glitch sound
+// (vendingMachine.script), and on a TV, LCD screen, billboard, arcade, jukebox, radio
+// or speaker its own picture or sound glitch; QuestStopGlitch ends it. The sparks are
+// the EMP grenade's (interactiveDevice.script: OnEMPHitEvent -> 'emp_hit') and end on
+// their own after `lifetime`; a device whose template has no such effect shows nothing
+// and loses nothing. Lights are switched ON and OFF with the actions a light switch
+// sends (SetDeviceON / SetDeviceOFF -> TurnOnDevice / TurnOffDevice), which light a
+// street lamp the timetable keeps off by day; the revert puts back the state each one
+// had. Nothing is unpowered, so a glitching screen stays visible while it glitches.
+public class MassOverrideHack {
+  // Devices whose StartGlitching is a picture or sound glitch and nothing more.
+  // Terminals, fuse boxes, alarms and data terms glitch too, but there the glitch is
+  // gameplay (security, fast travel), so they are left alone.
+  public static func Glitchable(object: ref<GameObject>) -> Bool {
+    if !IsDefined(object) { return false; }
+    if IsDefined(object as VendingMachine) { return true; }
+    if IsDefined(object as TV) { return true; }
+    if IsDefined(object as LcdScreen) { return true; }
+    if IsDefined(object as BillboardDevice) { return true; }
+    if IsDefined(object as ArcadeMachine) { return true; }
+    if IsDefined(object as Jukebox) { return true; }
+    if IsDefined(object as Radio) { return true; }
+    if IsDefined(object as Speaker) { return true; }
+    if IsDefined(object as HoloTable) { return true; }
+    if IsDefined(object as NcartTimetable) { return true; }
+    if IsDefined(object as RetractableAd) { return true; }
+    return false;
+  }
+
+  // Devices whose ON/OFF is light and nothing else: lamps and exit signs, spotlights,
+  // traffic, crossing and zebra lights, and the signs and ads with no glitch of their
+  // own. Alarm lights belong to security systems and are left alone.
+  public static func Strobable(object: ref<GameObject>) -> Bool {
+    if !IsDefined(object) { return false; }
+    if IsDefined(object as ElectricLight) { return true; }
+    if IsDefined(object as BlindingLight) { return true; }
+    if IsDefined(object as TrafficLight) { return true; }
+    if IsDefined(object as GameplayLight) { return true; }
+    if IsDefined(object as InteractiveAd) { return true; }
+    if IsDefined(object as AnimatedSign) { return true; }
+    if IsDefined(object as InteractiveSign) { return true; }
+    return false;
+  }
+
+  // The controller this cast used, kept on the target so the revert reaches it after
+  // the device has streamed out; otherwise the one of the device in the world now.
+  public static func Controller(target: ref<MassOverrideTarget>, game: GameInstance) -> ref<ScriptableDeviceComponentPS> {
+    if IsDefined(target.ps) { return target.ps; }
+    return MassOverridePower.Controller(GameInstance.FindEntityByID(game, target.entityId) as GameObject);
+  }
+
+  // True when the glitch was sent. A broken or unpowered device, or one already
+  // glitching for some other reason, is left as it is and not stopped later either.
+  public static func Glitch(target: ref<MassOverrideTarget>, object: ref<GameObject>) -> Bool {
+    let ps: ref<ScriptableDeviceComponentPS> = MassOverridePower.Controller(object);
+    if !IsDefined(ps) { return false; }
+    if ps.IsDisabled() || ps.IsUnpowered() || ps.IsGlitching() { return false; }
+    if !ps.CapriMassOverrideGlitch(true) { return false; }
+    target.ps = ps;
+    target.glitch = true;
+    return true;
+  }
+
+  public static func Unglitch(target: ref<MassOverrideTarget>, game: GameInstance) -> Bool {
+    if !target.glitch { return false; }
+    let ps: ref<ScriptableDeviceComponentPS> = MassOverrideHack.Controller(target, game);
+    if !IsDefined(ps) { return false; }
+    return ps.CapriMassOverrideGlitch(false);
+  }
+
+  public static func Glitching(target: ref<MassOverrideTarget>, game: GameInstance) -> Bool {
+    let ps: ref<ScriptableDeviceComponentPS> = MassOverrideHack.Controller(target, game);
+    if !IsDefined(ps) { return false; }
+    return ps.IsGlitching();
+  }
+
+  // The EMP grenade's sparks on an interactive device, for `seconds`.
+  public static func Emp(target: ref<MassOverrideTarget>, object: ref<GameObject>, seconds: Float) -> Bool {
+    if !IsDefined(object as InteractiveDevice) { return false; }
+    let evt: ref<EMPHitEvent> = new EMPHitEvent();
+    evt.lifetime = seconds;
+    object.QueueEvent(evt);
+    target.emp = true;
+    return true;
+  }
+
+  // A light switch: ON or OFF through the controller. Nothing without power, or broken.
+  public static func Switch(ps: ref<ScriptableDeviceComponentPS>, on: Bool) -> Bool {
+    if !IsDefined(ps) { return false; }
+    if ps.IsDisabled() || ps.IsUnpowered() { return false; }
+    if on {
+      ps.ExecutePSAction(ps.ActionSetDeviceON());
+    } else {
+      ps.ExecutePSAction(ps.ActionSetDeviceOFF());
+    }
+    return true;
+  }
+
+  // Puts a light on the beat: remembers whether it was ON and switches it to `first`
+  // at once, so the cast itself is the first visible change.
+  public static func StrobeStart(target: ref<MassOverrideTarget>, object: ref<GameObject>, first: Bool) -> Bool {
+    let ps: ref<ScriptableDeviceComponentPS> = MassOverridePower.Controller(object);
+    if !IsDefined(ps) { return false; }
+    if ps.IsDisabled() || ps.IsUnpowered() { return false; }
+    target.ps = ps;
+    target.strobe = true;
+    target.stateOn = Equals(ps.GetDeviceState(), EDeviceStatus.ON);
+    MassOverrideHack.Switch(ps, first);
+    return true;
+  }
+
+  // One beat for every strobed light. `on` is the state the beat switches to; with
+  // `chance` below 1.0 each light draws its own instead (the blackout's flicker).
+  public static func Beat(game: GameInstance, targets: array<ref<MassOverrideTarget>>, on: Bool, chance: Float) -> Int32 {
+    let switched: Int32 = 0;
+    let i: Int32 = 0;
+    while i < ArraySize(targets) {
+      let target: ref<MassOverrideTarget> = targets[i];
+      if target.strobe {
+        let state: Bool = on;
+        if chance < 1.0 {
+          state = RandF() < chance;
+        }
+        if MassOverrideHack.Switch(MassOverrideHack.Controller(target, game), state) {
+          switched += 1;
+        }
+      }
+      i += 1;
+    }
+    return switched;
+  }
+
+  public static func StrobeRestore(target: ref<MassOverrideTarget>, game: GameInstance) -> Bool {
+    if !target.strobe { return false; }
+    return MassOverrideHack.Switch(MassOverrideHack.Controller(target, game), target.stateOn);
+  }
+
+  public static func IsOn(target: ref<MassOverrideTarget>, game: GameInstance) -> Bool {
+    let ps: ref<ScriptableDeviceComponentPS> = MassOverrideHack.Controller(target, game);
+    if !IsDefined(ps) { return false; }
+    return Equals(ps.GetDeviceState(), EDeviceStatus.ON);
+  }
+
+  // Whether anyone could have seen it: inside the camera's frustum, and how close.
+  public static func Seen(stats: ref<MassOverrideStats>, camera: ref<CameraSystem>, object: ref<GameObject>, here: Vector4) -> Void {
+    if !IsDefined(object) { return; }
+    if IsDefined(camera) && camera.IsInCameraFrustum(object, 2.0, 1.0) {
+      stats.hackInView += 1;
+    }
+    let away: Float = Vector4.Distance(object.GetWorldPosition(), here);
+    if stats.nearestHack < 0.0 || away < stats.nearestHack {
+      stats.nearestHack = away;
+    }
+  }
+}
+
+// The glitch actions are protected on the controller, so the switch is added to the
+// class itself, named for Capri so it cannot meet another mod's method. It sends the
+// same QuestStartGlitch / QuestStopGlitch a quest sends (scriptableDeviceBasePS.script).
+@addMethod(ScriptableDeviceComponentPS)
+public func CapriMassOverrideGlitch(on: Bool) -> Bool {
+  if this.IsDisabled() { return false; }
+  if on {
+    this.ExecutePSAction(this.ActionQuestStartGlitch());
+  } else {
+    this.ExecutePSAction(this.ActionQuestStopGlitch());
+  }
+  return true;
+}
+
+// CARS. A car with ambient crowd at the wheel gets what V's Accelerate quickhack does
+// (vehicleComponentPS.script: OnVehicleOverrideAccelerate): high-priority panic driving
+// and the native Accelerate hack, which floors it, and its alarm goes off as well. An
+// empty, parked car's alarm goes off: set on its vehicle controller, the switch the
+// Distract quickhack's ForceCarAlarm ends in (OnForceCarAlarm -> SetAlarm(true)), set
+// directly because that action's own off-timer is the quickhack upload time, 0 outside
+// a quickhack. A car someone else is in -- V, another player, a story NPC, a passenger
+// -- only honks. V's cars, quest cars and wrecks are left alone.
+public class MassOverrideCars {
+  public static func None() -> Int32 { return 0; }
+  public static func Alarm() -> Int32 { return 1; }
+  public static func Honk() -> Int32 { return 2; }
+  public static func Accelerate() -> Int32 { return 3; }
+
+  public static func HonkSeconds() -> Float { return 3.0; }
+
+  public static func Hack(game: GameInstance, vehicle: ref<VehicleObject>, target: ref<MassOverrideTarget>) -> Int32 {
+    if !IsDefined(vehicle) || !IsDefined(target) { return MassOverrideCars.None(); }
+    if vehicle.IsPlayerVehicle() || vehicle.IsDestroyed() || vehicle.IsQuest() {
+      return MassOverrideCars.None();
+    }
+    let ps: ref<VehicleComponentPS> = vehicle.GetVehiclePS();
+    if MassOverrideCars.CrowdDriven(game, vehicle) {
+      vehicle.EnableHighPriorityPanicDriving();
+      vehicle.ActivateNetrunnerQuickhack(VehicleNetrunnerQuickhackType.Accelerate);
+      target.hacked = true;
+      if IsDefined(ps) && ps.CapriMassOverrideCarAlarm(true) {
+        target.alarm = true;
+      }
+      return MassOverrideCars.Accelerate();
+    }
+    if VehicleComponent.GetNumberOfOccupiedSlots(game, vehicle) == 0 {
+      if IsDefined(ps) && ps.CapriMassOverrideCarAlarm(true) {
+        target.alarm = true;
+        return MassOverrideCars.Alarm();
+      }
+      return MassOverrideCars.None();
+    }
+    let horn: ref<VehicleQuestHornEvent> = new VehicleQuestHornEvent();
+    horn.honkTime = MassOverrideCars.HonkSeconds();
+    vehicle.QueueEvent(horn);
+    return MassOverrideCars.Honk();
+  }
+
+  // The driver, when it is ambient crowd. V, other players and story NPCs never are.
+  public static func CrowdDriven(game: GameInstance, vehicle: ref<VehicleObject>) -> Bool {
+    if !IsDefined(vehicle) { return false; }
+    let mounted: ref<GameObject> = VehicleComponent.GetDriverMounted(game, vehicle.GetEntityID());
+    let driver: ref<ScriptedPuppet> = mounted as ScriptedPuppet;
+    if !IsDefined(driver) { return false; }
+    if driver.IsPlayer() { return false; }
+    return driver.IsCrowd();
+  }
+
+  // The Accelerate hack runs for its own tweaked duration; renewed on the panic's
+  // beat for the cars this cast hacked that are still driven and no longer under it.
+  public static func Rehack(game: GameInstance, targets: array<ref<MassOverrideTarget>>) -> Int32 {
+    let renewed: Int32 = 0;
+    let i: Int32 = 0;
+    while i < ArraySize(targets) {
+      if targets[i].hacked {
+        let vehicle: ref<VehicleObject> = GameInstance.FindEntityByID(game, targets[i].entityId) as VehicleObject;
+        if IsDefined(vehicle) && !vehicle.IsDestroyed() && !vehicle.IsVehicleAccelerateQuickhackActive()
+            && MassOverrideCars.CrowdDriven(game, vehicle) {
+          vehicle.EnableHighPriorityPanicDriving();
+          vehicle.ActivateNetrunnerQuickhack(VehicleNetrunnerQuickhackType.Accelerate);
+          renewed += 1;
+        }
+      }
+      i += 1;
+    }
+    return renewed;
+  }
+
+  public static func Silence(vehicle: ref<VehicleObject>) -> Void {
+    if !IsDefined(vehicle) { return; }
+    let ps: ref<VehicleComponentPS> = vehicle.GetVehiclePS();
+    if IsDefined(ps) {
+      ps.CapriMassOverrideCarAlarm(false);
+    }
+  }
+
+  public static func Ringing(vehicle: ref<VehicleObject>) -> Bool {
+    if !IsDefined(vehicle) { return false; }
+    let ps: ref<VehicleComponentPS> = vehicle.GetVehiclePS();
+    if !IsDefined(ps) { return false; }
+    return ps.CapriMassOverrideCarAlarmOn();
+  }
+}
+
+// GetVehicleControllerPS is private on VehicleComponentPS, so the alarm switch is
+// added to the class itself. Named for Capri, so it cannot meet another mod's method.
+@addMethod(VehicleComponentPS)
+public func CapriMassOverrideCarAlarm(on: Bool) -> Bool {
+  let controller: ref<vehicleControllerPS> = this.GetVehicleControllerPS();
+  if !IsDefined(controller) { return false; }
+  controller.SetAlarm(on);
+  return true;
+}
+
+@addMethod(VehicleComponentPS)
+public func CapriMassOverrideCarAlarmOn() -> Bool {
+  let controller: ref<vehicleControllerPS> = this.GetVehicleControllerPS();
+  if !IsDefined(controller) { return false; }
+  return controller.IsAlarmOn();
+}
+
+// PEOPLE. The attitude switch alone changed a flag nobody could see. This is the
+// panic MaxTac's arrival causes (psychoSquadAVSystem.script broadcasts Terror from the
+// player at 100 m): civilians scream, run and cower. It is broadcast from V at the
+// cast and renewed every few seconds for the duration, and each person the probe
+// found also gets it directly, so someone out of V's line still reacts.
+public class MassOverridePeople {
+  public static func Radius() -> Float { return 60.0; }
+  public static func RepeatSeconds() -> Float { return 6.0; }
+
+  public static func Panic(player: ref<PlayerPuppet>) -> Int32 {
+    if !IsDefined(player) { return 0; }
+    StimBroadcasterComponent.BroadcastStim(player, gamedataStimType.Terror, MassOverridePeople.Radius());
+    return 1;
+  }
+
+  public static func Scare(player: ref<PlayerPuppet>, npc: ref<NPCPuppet>) -> Bool {
+    if !IsDefined(player) || !IsDefined(npc) { return false; }
+    StimBroadcasterComponent.SendStimDirectly(player, gamedataStimType.Terror, npc);
+    return true;
+  }
+
+  // True on the ticks that renew the panic. Division and subtraction rather than a
+  // modulo, as elsewhere in these files.
+  public static func Due(tick: Int32, interval: Float) -> Bool {
+    let every: Int32 = RoundF(MassOverridePeople.RepeatSeconds() / interval);
+    if every <= 0 || tick <= 0 { return false; }
+    let rounds: Int32 = tick / every;
+    return tick - rounds * every == 0;
+  }
+}
+
+// DEVICES THE PROBE CANNOT SEE. The targeting system only returns entities that carry
+// a targeting component -- what V can scan or hack -- so a live cast in Japantown found
+// vending machines, door panels and traffic lights and not one TV, billboard, sign or
+// lamp. Codeware's entity lifecycle callbacks report every device of a listed class
+// as it streams in and out; this keeps the ids of the ones attached right now, keyed
+// by the id itself, and a cast asks it for those near V.
+public class MassOverrideDeviceEntry {
+  public let entityId: EntityID;
+}
+
+public class MassOverrideRegistry extends ScriptableSystem {
+  private let m_devices: ref<inkHashMap>;
+  private let m_size: Int32;     // entries held now
+  private let m_attached: Int32; // attach events seen this session
+  private let m_detached: Int32; // detach events seen this session
+
+  public static func Get(game: GameInstance) -> ref<MassOverrideRegistry> {
+    let system: ref<MassOverrideRegistry> =
+      GameInstance.GetScriptableSystemsContainer(game).Get(n"MassOverrideRegistry") as MassOverrideRegistry;
+    if IsDefined(system) { return system; }
+    return GameInstance.GetScriptableSystemsContainer(game).Get(n"Open77.MassOverrideRegistry") as MassOverrideRegistry;
+  }
+
+  private func OnAttach() -> Void {
+    this.m_devices = new inkHashMap();
+    let callbacks: ref<CallbackSystem> = GameInstance.GetCallbackSystem();
+    MassOverrideRegistry.Targets(callbacks.RegisterCallback(n"Entity/Attach", this, n"OnDeviceAttach"));
+    MassOverrideRegistry.Targets(callbacks.RegisterCallback(n"Entity/Detach", this, n"OnDeviceDetach"));
+  }
+
+  private func OnDetach() -> Void {
+    let callbacks: ref<CallbackSystem> = GameInstance.GetCallbackSystem();
+    callbacks.UnregisterCallback(n"Entity/Attach", this, n"OnDeviceAttach");
+    callbacks.UnregisterCallback(n"Entity/Detach", this, n"OnDeviceDetach");
+  }
+
+  // The classes MassOverridePower switches. The subclasses are listed as well, in
+  // case a type target only matches the exact class; a device reported twice is
+  // simply stored once.
+  public static func Targets(handler: ref<CallbackSystemHandler>) -> Void {
+    if !IsDefined(handler) { return; }
+    handler.AddTarget(EntityTarget.Type(n"VendingMachine"));
+    handler.AddTarget(EntityTarget.Type(n"WeaponVendingMachine"));
+    handler.AddTarget(EntityTarget.Type(n"IceMachine"));
+    handler.AddTarget(EntityTarget.Type(n"TV"));
+    handler.AddTarget(EntityTarget.Type(n"WallScreen"));
+    handler.AddTarget(EntityTarget.Type(n"LcdScreen"));
+    handler.AddTarget(EntityTarget.Type(n"ApartmentScreen"));
+    handler.AddTarget(EntityTarget.Type(n"BillboardDevice"));
+    handler.AddTarget(EntityTarget.Type(n"InteractiveAd"));
+    handler.AddTarget(EntityTarget.Type(n"AnimatedSign"));
+    handler.AddTarget(EntityTarget.Type(n"InteractiveSign"));
+    handler.AddTarget(EntityTarget.Type(n"ArcadeMachine"));
+    handler.AddTarget(EntityTarget.Type(n"PachinkoMachine"));
+    handler.AddTarget(EntityTarget.Type(n"Jukebox"));
+    handler.AddTarget(EntityTarget.Type(n"Radio"));
+    handler.AddTarget(EntityTarget.Type(n"Speaker"));
+    handler.AddTarget(EntityTarget.Type(n"ElectricLight"));
+    handler.AddTarget(EntityTarget.Type(n"ExitLight"));
+    handler.AddTarget(EntityTarget.Type(n"BlindingLight"));
+    handler.AddTarget(EntityTarget.Type(n"Reflector"));
+    handler.AddTarget(EntityTarget.Type(n"TrafficLight"));
+    handler.AddTarget(EntityTarget.Type(n"TrafficZebra"));
+    handler.AddTarget(EntityTarget.Type(n"CrossingLight"));
+  }
+
+  private cb func OnDeviceAttach(event: ref<EntityLifecycleEvent>) {
+    let entity: wref<Entity> = event.GetEntity();
+    if !IsDefined(entity) || !IsDefined(this.m_devices) { return; }
+    this.m_attached += 1;
+    let id: EntityID = entity.GetEntityID();
+    let key: Uint64 = Cast<Uint64>(id);
+    let entry: ref<MassOverrideDeviceEntry> = new MassOverrideDeviceEntry();
+    entry.entityId = id;
+    if this.m_devices.KeyExist(key) {
+      this.m_devices.Set(key, entry);
+    } else {
+      this.m_devices.Insert(key, entry);
+      this.m_size += 1;
+    }
+  }
+
+  private cb func OnDeviceDetach(event: ref<EntityLifecycleEvent>) {
+    let entity: wref<Entity> = event.GetEntity();
+    if !IsDefined(entity) || !IsDefined(this.m_devices) { return; }
+    this.m_detached += 1;
+    let key: Uint64 = Cast<Uint64>(entity.GetEntityID());
+    if this.m_devices.KeyExist(key) {
+      this.m_devices.Remove(key);
+      this.m_size -= 1;
+    }
+  }
+
+  // How far from V a registered device is still switched. Wider than the probe's first
+  // reach: a billboard on a building across the street is often 80-120 m away and still
+  // the brightest thing in view, and the registry only holds what is streamed in anyway.
+  public static func Reach() -> Float { return 120.0; }
+
+  public func Size() -> Int32 { return this.m_size; }
+  public func AttachEvents() -> Int32 { return this.m_attached; }
+  public func DetachEvents() -> Int32 { return this.m_detached; }
+
+  // Ids of the devices held now that stand within `radius` of `origin`.
+  public func Near(game: GameInstance, origin: Vector4, radius: Float) -> array<EntityID> {
+    let out: array<EntityID>;
+    if !IsDefined(this.m_devices) { return out; }
+    let values: array<wref<IScriptable>>;
+    this.m_devices.GetValues(values);
+    for value in values {
+      let entry: wref<MassOverrideDeviceEntry> = value as MassOverrideDeviceEntry;
+      if IsDefined(entry) {
+        let object: ref<GameObject> = GameInstance.FindEntityByID(game, entry.entityId) as GameObject;
+        if IsDefined(object) && Vector4.Distance(object.GetWorldPosition(), origin) <= radius {
+          ArrayPush(out, entry.entityId);
+        }
+      }
+    }
+    return out;
   }
 }

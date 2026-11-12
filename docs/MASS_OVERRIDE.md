@@ -146,10 +146,39 @@ Which one Capri gets: `CapriMassOverride.Mode()` asks `MassOverridePrefs`, which
 
 ## Deploying the scripts
 
-Two files, and nothing else:
+Two files, and both have to travel together in the launcher package:
 
-- `r6/scripts/Open77/Open77MassOverride.reds`
-- `r6/scripts/CapriPersonalityConstruct/Capri.MassOverride.reds`
+- `r6/scripts/Open77/Open77MassOverride.reds` (probes, effects, prefs, cache, the cast/feed HTTP classes)
+- `r6/scripts/CapriPersonalityConstruct/Capri.MassOverride.reds` (the action, cost, cooldown, scheduling)
+
+`Capri.MassOverride.reds` calls `MassOverrideProbe`, `MassOverridePrefs`, `MassOverrideEffects` and
+`MassOverrideCastPost`, which are declared in the Open77 file. The official Capri release does not
+contain that file and no other launcher package ships it, so a package built without it leaves every
+player with a script set that fails to resolve. `scripts/build_capri_launcher_mod.py` adds it from this
+repo automatically (`Mass Override: added r6/scripts/Open77/Open77MassOverride.reds`).
+
+### Reply handlers must be `cb` **and** must outlive their request
+
+Both HTTP reply handlers (`MassOverrideFeedPoll.OnReply` and `MassOverrideCastPost.OnReply`) are
+declared `cb func`. RedHttpClient stores the target as a weak reference and invokes the named method;
+a method without `cb` is never invoked and the response is dropped silently. That failure looked like
+Mass Override doing nothing: the register request was answered but the cast that follows the reply was
+never sent, and the feed poller never re-armed (one feed request per session in
+`red4ext/logs/redhttpclient-*.log`). `HttpCallback.target` is a `wref<IScriptable>`, so the reply only lands while the target is alive. A
+one-shot `DelayCallback` is released the moment its `Call()` returns, which killed both objects before
+their replies arrived. Both now keep themselves scheduled across the request: the feed poll re-arms
+`this` before it sends (also making it the permanent poller, guarded by `MassOverridePrefs.FeedRunning()`),
+and the cast post schedules `this` for `KeepAliveSeconds()` and returns early when that keep-alive fires.
+This is the same mechanism that keeps the pulse/hold/revert callbacks alive.
+
+`mass-override/reds-lint.test.js` asserts the `cb` keyword and both self re-arms.
+
+### Runtime diagnostics
+
+`FTLog` output does not reach a readable log in every install. Each stage of a cast is appended to
+`r6/storages/CapriConstruct/mass_override.log` as well (`MassOverrideLog`): cast entered, guards
+(recharge, charge, empty sweep), probe counts, register/cast replies, and the final `mode=...` line with
+`hostile=` and `changed=`. One line per stage means a cast that stops early says where it stopped.
 
 `Capri.Actions.reds` must carry `case "mass_override": return CapriMassOverride.Run(player, CapriSystem.Get(player.GetGame()));`. If Capri reaches the action at all, that line is already there.
 
@@ -277,6 +306,94 @@ Still unverified:
 - Screen content changes (no content setter exists in vanilla; out of scope).
 - Vehicle-specific hostility (vanilla only reads vehicle attitude; drivers are ordinary NPCs and are handled by the NPC path).
 - Real probe coverage and per-cast cost at 1000 targets.
+
+## 1.16.11: levers the game itself uses
+
+The first live cast that produced a report (1.16.10, staging, Japantown, 2026-11-11) ran to the end and changed nothing anyone could see:
+
+```
+{"mode":"blackout","probes":62,"parts":128,"people":11,"hostile":11,"devices":50,"screens":31,"lights":12,"vehicles":7,"changed":243,"lightEvents":49}
+```
+
+The `/cast` candidates said why. The 31 "screens" were vending machines, door lock panels, a gate and a computer; the 12 "lights" were traffic and crosswalk lights, one reflector and loot crates. Not one TV, billboard, sign or street lamp, because `GetTargetParts` only returns entities with a targeting component. And the effect on those it did find was a disabled widget or light component, which is not what makes a street bright; the people only had an attitude flag set.
+
+1.16.11 keeps the probe and replaces every effect with a switch the game itself uses. All of them were read in the REDmod script sources that ship with the game (`tools/redmod/scripts`) and checked with the game's own compiler.
+
+| What | How | Source it copies |
+| --- | --- | --- |
+| City lights | `ForceCLSStateRequest` (ForcedOFF, source `CapriMassOverride`, priority VeryHigh, `savable = false`) to `CityLightSystem`; the revert sends DEFAULT for the same source, which removes only that entry. Blink alternates ForcedOFF / ForcedON every 0.5 s. | `core/systems/cityLightSystem.script` (the rain listener and quests use the same request) |
+| Devices | `ExecutePSAction(ActionSetDeviceUnpowered())` on the device's own controller; the revert sends `ActionSetDevicePowered()`, which restores the state the controller cached. Only visual device classes: vending machines, TVs, LCD screens, billboards, ads, signs, arcade machines, jukeboxes, radios, speakers, electric lights, reflectors, traffic lights. Doors, gates, terminals, cameras, turrets, loot and traps are reported (`powerSkipped`) and left alone. | `scriptableDeviceBasePS.script` (`UnpowerDevice` / `PowerDevice`), `deviceBase.script` (`CutPower` / `RestorePower`) |
+| Traffic lights | The cut, plus a `ToggleLightEvent(false)` every 0.25 s during a blackout: the traffic system's colour change re-lights the bulbs without checking the device state. | `trafficLight.script` (`OnTrafficLightChangeEvent`, `TurnOffLights`) |
+| People | `StimBroadcasterComponent.BroadcastStim(player, Terror, 60 m)` at the cast and every 6 s, plus `SendStimDirectly(Terror)` to every person the probe found; the attitude switch is kept. | `psychoSquadAVSystem.script` (MaxTac's arrival) |
+| Cars | Empty, parked, non-player cars: `vehicleControllerPS.SetAlarm(true)` (added to `VehicleComponentPS` as `CapriMassOverrideCarAlarm`), off at the revert. Not the `ForceCarAlarm` action: its off-timer is the quickhack upload time, 0 outside a quickhack. Occupied cars honk (`VehicleQuestHornEvent`, 3 s). | `vehicleComponentPS.script` (`OnForceCarAlarm`) |
+| Unreachable devices | `MassOverrideRegistry` (a ScriptableSystem) registers Codeware `Entity/Attach` and `Entity/Detach` callbacks for the classes above and keeps the attached ones in an `inkHashMap` keyed by entity id; each cast adds those within 70 m that the probe did not find. | Codeware 1.21 `CallbackSystem`, `EntityTarget.Type` |
+
+Nothing touches components directly any more: a light component disabled from outside stays dark even after its device turns it back on, so the device's controller does both the off and the on.
+
+### 1.16.12 and the brain
+
+The first cast on 1.16.11 never reached the game's action code. Capri Brain forwarded the model's reply untouched because it was not JSON at all - `"actions":["mass_override","target":"North Oak"]` (the prompt's own `{"do":"mass_override","target":...}` line invites the target) - so `forceMassOverride` could not parse it and gave up, Capri dropped the action, and with no cast there was no report. The request also waited 42 s for the model (qwen2.5:7b on CPU).
+
+- `client/mcp/capri-brain.mjs`: a request whose utterance clearly asks for Mass Override is now answered by the brain itself, without a model call, in the same completion shape: `{"say":"Mass Override, V.","actions":[{"do":"mass_override"}]}`, plus `mass_override_mode` first when the utterance names blink, blackout or auto. The utterance is the `V says:` line of the SITUATION block when the game sends one (that block also quotes older events, which must not count). Only for a client whose system prompt lists `"do":"mass_override"`, so a Capri build without the action is never sent one. `CAPRI_BRAIN_MO_SHORTCUT=0` turns it off; the fallback then replaces a non-JSON reply whole instead of giving up. Answered in 10 ms on the server.
+- 1.16.12: a sweep that finds nothing no longer returns early. The city lights and the panic need no target, and the early return also skipped every report, which looked exactly like the action never running. The registry's reach is 120 m (a billboard across the street is often 80-120 m away), wider than the probe's 70 m.
+
+### 1.16.13: what the tests showed, and seeing it ourselves
+
+Four live casts on 2026-11-11 and what each one proved:
+
+| Cast | Where / when | Reported | What V saw |
+| --- | --- | --- | --- |
+| 1.16.10 | Japantown | 243 component toggles on vending machines, door panels, traffic lights | nothing |
+| 1.16.11 | North Oak, 08:52 | never ran: the model's reply was not JSON (fixed in the brain) | nothing |
+| 1.16.12 | XYBERCITY hub, North Oak, 01:00 | 20 devices cut, 19 still cut 2 s later, screens and lights off | nothing: the screens, signs and people in view were custom content and players, not game devices or crowd |
+| 1.16.12 | Japantown, 08:52 | 101 devices cut (15 vending machines, 35 traffic/crosswalk lights, 35 street lamps, 15 TVs), 92 still dark at 2 s, 1 car alarm, 7 horns, 8 panic stims | people ran; no visible change to lights, screens or cars |
+
+The two casts after that one (74 s and 107 s later, then 71 s later) were refused by the 120 s recharge, which only went into Capri's hidden transcript (`Note`). 1.16.13:
+
+- **On-screen confirmation**: `CapriSystem.Alert` after every cast (city lights, devices cut and how many were in view, how many people can panic, car alarms) and when a cast is refused (recharging, battery). Before this a cast that ran and one that never happened looked the same.
+- **Recharge 40 s** on both sides (`CapriMassOverride.Cooldown()`, gate `cooldownMs`): the 30 s effect, its revert and a margin. Still a placeholder.
+- **The revert reaches devices that streamed out**: the cut keeps the device's controller on the target (`target.ps`) and the power comes back through it. The 1.16.12 North Oak cast was followed by a fast travel and its revert restored 0 of 20; the Japantown one restored 37 of 92, the rest had streamed out while V walked.
+- **Pictures**: Capri Voz (the helper that already takes Capri's screenshots, `vista_pedido.json` / `vista_respuesta.json`) is asked for one 3 s and 15 s into the effect and one after the revert; the picture Capri took when V asked is kept as "before". Each is saved as base64 text in `r6/storages/CapriConstruct/mass_override_<cast>_<phase>.b64`; nothing is uploaded.
+- **Report fields**: `litBefore` (cut devices that had a screen or light on), `cutInView` (cut devices in the camera frustum, `CameraSystem.IsInCameraFrustum`), `nearestCut` (m), `crowd` (people found who are ambient crowd, the only ones a panic moves), `area`, `cooldown`.
+
+### Reports
+
+Every cast now posts four reports to the gate's `/report` (logged by `open77-mass-override-staging`, the last one kept in `/state`):
+
+- `phase: cast` - what was asked: the probe counts plus `powerCut`, `powerSkipped`, `alarms`, `honks`, `terror`, `city` (state before), `cityForced`, `cityFuses`, `cityLights`, `hour` (in-game; CLS lights are off by day), `registry`, `registryNear`, `attachEvents`, `classes` (devices per class) and `build`.
+- `phase: verify` - two seconds later, what took: `city` (now), `cut`, `stillCut`, `screensOn`, `lightsOn`, `alarms`, `alarmsOn`, `gone`.
+- `phase: revert` - at 30 s: `cityReleased`, `restored`, `silenced`, `calmed`.
+- `phase: settled` - two seconds after the revert: the same counters as verify; `stillCut` should be 0 and `city` should be `default`.
+
+### 1.16.14: the levers V's own quickhacks use
+
+The 1.16.13 casts reported 66 devices without power, 8 car alarms ringing and 47 lights that had been on, at 8 in the morning in Japantown, and nobody could tell: a vending machine with its screen off and a street lamp already off by day look like nothing happened. 1.16.14 replaced the power cut with what the game plays when V hacks something:
+
+| What | Call | Source |
+| --- | --- | --- |
+| Vending machines, TVs, LCD screens, billboard devices, arcades, jukeboxes, radios, speakers | `QuestStartGlitch` through the device's controller (an `@addMethod` on `ScriptableDeviceComponentPS`, the action is protected) -> `StartGlitching`; a vending machine throws cans out | `scriptableDeviceBasePS.script`, `vendingMachine.script` |
+| The same devices | `EMPHitEvent` (the EMP grenade's `emp_hit` sparks), ends on its own | `interactiveDevice.script` |
+| Street lamps, spotlights, traffic, crossing and zebra lights, signs | `SetDeviceON` / `SetDeviceOFF` on a 0.5 s beat (blink) or a random 0.25 s flicker (blackout); the state at the cast is put back | `deviceBase.script` |
+| Cars with crowd at the wheel | `EnableHighPriorityPanicDriving` + `ActivateNetrunnerQuickhack(Accelerate)` and the alarm; renewed every 6 s | `vehicleComponentPS.script` |
+
+It also fixed a bug that had been there since the step log was added: `MassOverrideLog` opened `FileSystem.GetStorage("CapriConstruct")` a second time, and RedFileSystem answers that by revoking the storage for the whole session (`red4ext/logs/redfilesystem-*.log`: "Access to this storage has been permanently revoked"). The first line of the first cast locked Capri herself out of her settings, her history and the files Capri Voz answers in, which is also why no picture was ever saved. The log is now kept in memory and sent to the gate (`phase: log`); nothing in Mass Override opens a storage. Pictures are kept as `mass_override_<cast>_<phase>.txt` (base64).
+
+Two casts on 2026-11-12, Japantown at 08:00 in-game: 21 machines glitching (21/21 at 2 s), 42 lights switching, 4 cars accelerating with panic driving, 9 alarms, 6 people panicking, all put back by the revert (`settled`: 0 glitching, 42/42 lights back as they were). V heard the horns; the street did not look different.
+
+### 1.16.15: billboards, screens and every light on a hacked device
+
+What makes Japantown bright is not devices. The billboards and ad screens are world advertisement nodes (`worldAdvertisementNode`) drawn by the ink advertisements layer, and the screens on walls and machines are world widgets; none has a device controller, so nothing in 1.16.14 could reach them. They are all ink, and Codeware hands out the ink system's layers and world widgets (`inkSystem.GetLayers`, `GetWorldWidgets`):
+
+- `MassOverrideInk`: the root of every world ink layer (name contains advert, world or fluff; HUD, menus, notifications, loading and photo mode are never touched) and of every world widget is saved (opacity, tint) and put on the beat: lit in the beat's colour (red, cyan, magenta, acid green) or nearly gone; the blackout draws each one at random. The cast report names every layer (`inkNames`, the ones taken marked `*`) so the right one can be confirmed by name.
+- `MassOverrideLights`: every `gameLightComponent` on a hacked device is switched and recoloured with `SetParameters` at three times its intensity, the call the game's own `ChangeLightEvent` ends in; its settings and on/off state are saved and put back.
+- `MassOverrideFx`: V's screen plays `transition_glitch_loop` (the fast-forward glitch) for 1.5 s as the wave goes out and 0.6 s as the city comes back.
+- The first cast of a session is blink now: a synchronised beat reads at once; a blackout by day changes little.
+
+New report fields: `inkLayers`, `worldWidgets`, `inkTargets`, `lightComponents`, `inkNames` (cast) and `ink`, `lightComponents` (revert).
+
+### Compile check without the game
+
+`scc.exe` pops a modal dialog when a compile fails, which is not acceptable while someone is playing. `scripts/MoScc.cs` (a 70-line wrapper, built with the .NET Framework `csc.exe`) loads the game's own `engine/tools/scc_lib.dll` and calls `scc_settings_disable_error_popup` before `scc_compile`. It compiles a sandbox copy of `r6/scripts` plus the three RED4ext plugin script folders against a copy of `r6/cache/final.redscripts`, so the running game's files are never touched. 1.16.11: `Completed with 603 warnings and 0 errors` (the same 603 as the game's own build); a deliberate call to a missing method failed with `UNRESOLVED_MEMBER` and no dialog.
 
 ## Verification status
 

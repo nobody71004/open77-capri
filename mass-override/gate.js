@@ -6,7 +6,9 @@ const DEFAULTS = {
   reach: 25, // one probe's radius; probes chain, so coverage is not this number
   probeBudget: 64, // probes per cast, mirrors MassOverrideProbe.MaxProbes()
   targetCap: 1000,
-  cooldownMs: 120_000, // placeholder until the cooldown is decided
+  // The 30 s effect, its revert and a margin; mirrors CapriMassOverride.Cooldown() (40 s).
+  // Still a placeholder until the real value is decided (it was 120 s).
+  cooldownMs: 40_000,
   cost: 25, // matches CapriMassOverride.ChargeCost() in the game scripts (RAM pool)
   durationMs: 30_000,
   // "alternate" (default) hands out one mode per cast, starting with blackout, the
@@ -31,6 +33,13 @@ function createMassOverride(options = {}) {
   const active = new Map(); // castId -> { casterId, targetIds, expiresAt }
   let nextMode = "blackout"; // the mode the next cast hands out, shared by every player
   let nextCastId = 1;
+  let nextSeq = 1; // feed sequence, one per accepted cast
+  // Broadcast log: every accepted cast in the order it ran, so a client that was not
+  // the caster reads the mode the server handed out instead of guessing from its own
+  // cursor. Bounded, because a long session only ever needs the newest few and
+  // nothing else prunes this.
+  const events = [];
+  const feedLimit = 64;
 
   function setBalance(playerId, amount) {
     balances.set(playerId, amount);
@@ -98,18 +107,27 @@ function createMassOverride(options = {}) {
     // The areas the cast actually reached, so a client can tell an Arroyo flood
     // from a Badlands one without re-deriving them from coordinates.
     const areas = [...new Set(targets.map((t) => t.area).filter(Boolean))];
+    // Picked once, before the event is built: the feed must name the same mode this
+    // cast ran, and calling pickMode() twice would hand the next cast the other one.
+    const mode = pickMode();
 
-    return {
-      ok: true,
-      event: {
-        castId,
-        casterId: player.id,
-        targets,
-        areas,
-        mode: pickMode(),
-        expiresAt,
-      },
-    };
+    const event = { castId, casterId: player.id, targets, areas, mode, expiresAt };
+    events.push({ seq: nextSeq++, castId, casterId: player.id, mode, areas, expiresAt });
+    if (events.length > feedLimit) events.shift();
+
+    return { ok: true, event };
+  }
+
+  // Broadcast feed: the casts a client has not applied yet, oldest first, so a poller
+  // that missed several still runs them in the order they happened rather than only
+  // the newest. `since` is the seq the client last applied; anything unparseable
+  // starts from the beginning of the retained log. `next` is the newest seq the
+  // server has issued, so a caught-up poller can hold its cursor without skipping a
+  // cast that lands between its request and the reply.
+  function feedSince(since) {
+    const parsed = Number(since);
+    const after = Number.isFinite(parsed) ? parsed : 0;
+    return { events: events.filter((e) => e.seq > after), next: nextSeq - 1 };
   }
 
   // Called by the server timer when a cast's duration has passed.
@@ -125,13 +143,22 @@ function createMassOverride(options = {}) {
     return { castId, revertIds: cast.targetIds };
   }
 
+  // The last cast's own counts, as the client measured them. Kept so /state shows what
+  // a cast actually applied instead of only what the gate accepted.
+  let report = null;
+  function setReport(value) {
+    report = value;
+  }
+
   return {
     cfg,
     REASONS,
     setBalance,
     setMode,
+    setReport,
     check,
     cast,
+    feedSince,
     expire,
     // A getter, not a copied field: the cursor is a primitive that changes on every
     // cast, so a plain property would keep reporting the value it had at creation.
@@ -140,6 +167,9 @@ function createMassOverride(options = {}) {
       balances,
       claims,
       active,
+      get report() {
+        return report;
+      },
       get nextMode() {
         return nextMode;
       },

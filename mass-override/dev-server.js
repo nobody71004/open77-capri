@@ -5,6 +5,8 @@
 //   POST /cast              { playerId, candidates: [{ id, type }] }
 //   POST /expire            { castId }  (uses the server clock, or `now` for tests)
 //   POST /mode              { mode: "blink" | "blackout" | "alternate" }
+//   GET  /events?since=N    accepted casts after seq N, as JSON
+//   GET  /feed?since=N      the newest unseen cast as "<seq> <mode>", or "<seq> none"
 //   GET  /state             current cooldowns, claims and mode (debug)
 
 const http = require("node:http");
@@ -47,6 +49,15 @@ function createDevServer(options = {}) {
         mo.setBalance(p.id, p.balance ?? 0);
         return send(res, 200, { ok: true });
       }
+      // A cast's own counts, sent by the client after its effects ran. The in-game
+      // file log can refuse writes, so this is the reliable channel: no report, no
+      // completed cast.
+      if (req.method === "POST" && req.url === "/report") {
+        const r = await readBody(req);
+        mo.setReport(r);
+        console.log(`[report] ${JSON.stringify(r)}`);
+        return send(res, 200, { ok: true });
+      }
       if (req.method === "POST" && req.url === "/cast") {
         const { playerId, candidates = [] } = await readBody(req);
         const player = players.get(playerId);
@@ -70,9 +81,25 @@ function createDevServer(options = {}) {
         mo.setMode(mode);
         return send(res, 200, { ok: true, mode: mo.cfg.mode });
       }
+      if (req.method === "GET" && (req.url.startsWith("/events") || req.url.startsWith("/feed"))) {
+        const url = new URL(req.url, "http://127.0.0.1");
+        const feed = mo.feedSince(url.searchParams.get("since"));
+        if (url.pathname === "/feed") {
+          // Plain text for the game scripts, which have no JSON parser in reach and
+          // only need the newest mode plus a cursor: "<seq> <mode>". A caught-up
+          // poller gets its own cursor back with "none", so it never rewinds and
+          // re-applies a cast it has already run.
+          const newest = feed.events[feed.events.length - 1];
+          const body = newest ? `${newest.seq} ${newest.mode}` : `${feed.next} none`;
+          res.writeHead(200, { "content-type": "text/plain", "cache-control": "no-store" });
+          return res.end(body);
+        }
+        return send(res, 200, { ok: true, next: feed.next, events: feed.events });
+      }
       if (req.method === "GET" && req.url === "/state") {
         const s = mo._state;
         return send(res, 200, {
+          report: s.report ?? null,
           cooldownUntil: Object.fromEntries(s.cooldownUntil),
           balances: Object.fromEntries(s.balances),
           claims: Object.fromEntries(s.claims),

@@ -46,6 +46,9 @@ const TOKEN_PARAM = process.env.CAPRI_BRAIN_TOKEN_PARAM || 'max_tokens';
 const VISION = process.env.CAPRI_BRAIN_VISION === '1';
 const REQUEST_TIMEOUT_MS = clampInt(process.env.CAPRI_BRAIN_TIMEOUT_MS || 180_000, 5_000, 300_000);
 const KEEP_ALIVE = process.env.CAPRI_BRAIN_KEEP_ALIVE || '30m';
+// Keeps the prompt small enough for a small local model: the system message always stays, then as
+// many of the newest messages as fit in this many characters (the newest message always stays).
+const MAX_PROMPT_CHARS = clampInt(process.env.CAPRI_BRAIN_MAX_PROMPT_CHARS || 6_000, 1_000, 200_000);
 const STARTED_AT = Date.now();
 
 function clampInt(value, min, max) {
@@ -135,6 +138,22 @@ function normalizeMessages(messages) {
     .filter((message) => (typeof message.content === 'string' ? message.content.length > 0 : true));
 }
 
+// Drops the oldest non-system messages until the prompt fits MAX_PROMPT_CHARS.
+function trimMessages(messages) {
+  const size = (m) => String(m.content ?? '').length;
+  const system = messages.filter((m) => m.role === 'system');
+  const rest = messages.filter((m) => m.role !== 'system');
+  let budget = MAX_PROMPT_CHARS - system.reduce((n, m) => n + size(m), 0);
+  const kept = [];
+  for (let i = rest.length - 1; i >= 0; i -= 1) {
+    const cost = size(rest[i]);
+    if (kept.length > 0 && cost > budget) break;
+    kept.unshift(rest[i]);
+    budget -= cost;
+  }
+  return messages.filter((m) => m.role === 'system' || kept.includes(m));
+}
+
 function backendHeaders() {
   const headers = { 'Content-Type': 'application/json', Accept: 'application/json' };
   if (API_KEY) headers.Authorization = `Bearer ${API_KEY}`;
@@ -198,9 +217,29 @@ async function chat(req, res) {
     return;
   }
 
+  // An explicit Mass Override request never waits for the model, and never depends on the
+  // model writing its action as valid JSON: on 2026-11-11 a live request got back
+  // "actions":["mass_override","target":"North Oak"], which no parser can read, so the game
+  // dropped the action and the cast never ran. The reply is built here instead, in the same
+  // shape the model's would have, and it comes back at once rather than after ~40 s.
+  // Only for a client whose own prompt lists the action, so a Capri build without Mass
+  // Override is never sent one.
+  if (MO_SHORTCUT && clientKnowsMassOverride(messages)) {
+    const said = utteranceOf(messages);
+    if (MASS_OVERRIDE_REQUEST.test(said)) {
+      const reply = massOverrideReply(said);
+      console.error(
+        `[capri-brain] mass_override shortcut (no model call) actions=${JSON.stringify(reply.actions)} saidChars=${said.length}`,
+      );
+      sendJson(res, 200, completion(JSON.stringify(reply), backendModelFor(body.model)));
+      return;
+    }
+  }
+
+  const trimmed = trimMessages(messages);
   const payload = {
     model: backendModelFor(body.model),
-    messages,
+    messages: trimmed,
     stream: false,
     temperature: clampNumber(body.temperature, 0.85, 0, 2),
     top_p: clampNumber(body.top_p, 0.95, 0, 1),
@@ -208,6 +247,8 @@ async function chat(req, res) {
   payload[TOKEN_PARAM] = clampInt(body.max_tokens ?? body.max_completion_tokens ?? MAX_TOKENS, 16, MAX_TOKENS);
   if (BACKEND === 'ollama') payload.keep_alive = KEEP_ALIVE;
 
+  const startedAt = Date.now();
+  const chars = trimmed.reduce((n, m) => n + String(m.content ?? '').length, 0);
   let upstream;
   try {
     upstream = await fetch(`${BACKEND_URL}/chat/completions`, {
@@ -217,6 +258,7 @@ async function chat(req, res) {
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
   } catch (error) {
+    console.error(`[capri-brain] chat failed after ${Date.now() - startedAt}ms: ${error.message}`);
     sendJson(res, 502, {
       error: {
         message: `Capri Brain could not reach ${BACKEND} at ${BACKEND_URL}: ${error.message}`,
@@ -227,6 +269,7 @@ async function chat(req, res) {
   }
 
   const raw = await upstream.text();
+  console.error(`[capri-brain] chat messages=${trimmed.length}/${messages.length} chars=${chars} max_tokens=${payload[TOKEN_PARAM]} status=${upstream.status} ms=${Date.now() - startedAt}`);
   if (!upstream.ok) {
     sendJson(res, upstream.status >= 400 ? upstream.status : 502, {
       error: {
@@ -249,7 +292,99 @@ async function chat(req, res) {
     });
     return;
   }
+  forceMassOverride(messages, data);
   sendJson(res, 200, data);
+}
+
+// The small local models rarely pick mass_override on their own, and when they do they do
+// not always write it as valid JSON. Requests that clearly ask for it are answered by the
+// shortcut in chat(); this is the fallback for when the shortcut is switched off
+// (CAPRI_BRAIN_MO_SHORTCUT=0): the model's reply gets the one action, and a reply that is
+// not JSON at all is replaced whole. The game still runs the cast and the server gate still
+// decides every outcome.
+const MO_SHORTCUT = process.env.CAPRI_BRAIN_MO_SHORTCUT !== '0';
+const MASS_OVERRIDE_REQUEST =
+  /change everything around me|mass[\s-]*override|everything around me[^.!?]*(lights|screens|cars)|(lights|screens|cars)[^.!?]*(go out|turn hostile)/i;
+const MASS_OVERRIDE_MODE = /\b(blink|blackout|auto|alternate)\b/i;
+
+// What V said this turn. The game sends it either as the last user message or, when it
+// attaches a screenshot, as the "V says: ..." line of a SITUATION block -- and that block
+// also quotes older events, which must not count as a request.
+function utteranceOf(messages) {
+  const lastUser = [...messages].reverse().find((m) => m.role === 'user');
+  if (!lastUser) return '';
+  const content = lastUser.content;
+  const text =
+    typeof content === 'string'
+      ? content
+      : Array.isArray(content)
+        ? content.filter((part) => part?.type === 'text').map((part) => String(part.text ?? '')).join('\n')
+        : '';
+  const lines = text.split('\n');
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const match = /^\s*V says:\s*(.+)$/.exec(lines[i]);
+    if (match) return match[1].trim();
+  }
+  return text.trim();
+}
+
+// Only a Capri build whose own action list names mass_override can run it.
+function clientKnowsMassOverride(messages) {
+  return messages.some(
+    (m) => m.role === 'system' && typeof m.content === 'string' && m.content.includes('"do":"mass_override"'),
+  );
+}
+
+// The reply Capri reads: what she says and the actions to run, in order. A mode word in the
+// request pins that mode first (mass_override_mode), so "Mass Override, blackout" casts in
+// blackout. She says what she is doing, never that it already worked: the game reports that.
+function massOverrideReply(said) {
+  const word = MASS_OVERRIDE_MODE.exec(said)?.[1]?.toLowerCase();
+  const actions = [];
+  let say = 'Mass Override, V.';
+  if (word) {
+    const target = word === 'alternate' ? 'auto' : word;
+    actions.push({ do: 'mass_override_mode', target });
+    say = target === 'auto' ? 'Mass Override, alternating, V.' : `Mass Override, ${target}, V.`;
+  }
+  actions.push({ do: 'mass_override' });
+  return { say, mood: 'neutral', face: 'calm', actions };
+}
+
+// An OpenAI-style chat completion around `content`, the shape the backend returns.
+function completion(content, model) {
+  const created = Math.floor(Date.now() / 1000);
+  return {
+    id: `chatcmpl-capri-brain-${created}`,
+    object: 'chat.completion',
+    created,
+    model,
+    choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }],
+    usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+  };
+}
+
+function forceMassOverride(messages, data) {
+  if (!clientKnowsMassOverride(messages)) return;
+  const said = utteranceOf(messages);
+  if (!MASS_OVERRIDE_REQUEST.test(said)) return;
+  const message = data?.choices?.[0]?.message;
+  if (!message) return;
+  const wanted = massOverrideReply(said);
+  let reply = null;
+  try {
+    reply = JSON.parse(String(message.content ?? ''));
+  } catch {
+    reply = null;
+  }
+  if (reply && typeof reply === 'object' && !Array.isArray(reply)) {
+    reply.actions = wanted.actions;
+    reply.say = wanted.say;
+  } else {
+    reply = wanted;
+  }
+  message.content = JSON.stringify(reply);
+  console.error('[capri-brain] mass_override forced from request');
 }
 
 async function models(res) {

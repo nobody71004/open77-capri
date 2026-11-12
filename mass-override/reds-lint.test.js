@@ -23,6 +23,35 @@ test("the two owned scripts are clean", () => {
   assert.deepEqual(findings, []);
 });
 
+// RedHttpClient only invokes a reply method declared `cb`; without it the response is
+// dropped silently. That is what made every Mass Override cast stop after the
+// register call: the cast that follows the reply was never sent, and the feed
+// poller never re-armed. Pin the keyword so it cannot be lost again.
+test("both HTTP reply handlers are declared cb", () => {
+  const text = fs.readFileSync(path.join(ROOT, "Open77", "Open77MassOverride.reds"), "utf8");
+  assert.equal((text.match(/func OnReply\(/g) || []).length, 2, "both OnReply handlers present");
+  assert.equal(
+    (text.match(/cb func OnReply\(/g) || []).length,
+    2,
+    "RedHttpClient only invokes cb methods, so both reply handlers need it",
+  );
+});
+
+// HttpCallback keeps only a weak reference to its target. A one-shot delay callback
+// is released the moment Call() returns, so the reply arrived with nothing to
+// invoke. Both HTTP objects must keep themselves scheduled, which is what leaves the
+// delay system holding them across the request.
+test("both HTTP objects keep themselves alive while a request is in flight", () => {
+  const text = fs.readFileSync(path.join(ROOT, "Open77", "Open77MassOverride.reds"), "utf8");
+  const rearm = text.match(/DelayCallback\(this,/g) || [];
+  assert.equal(rearm.length, 2, "the feed poll and the cast post must each re-arm themselves");
+  assert.ok(
+    /DelayCallback\(this,[\s\S]{0,120}AsyncHttpClient\.Get/.test(text),
+    "the poll must be armed before its request",
+  );
+  assert.ok(/if this\.keepAlive \{/.test(text), "the cast keep-alive firing must not re-arm");
+});
+
 test("every class the two files use is declared in one of them", () => {
   const { classes } = lintFiles(OWNED);
   for (const name of [
