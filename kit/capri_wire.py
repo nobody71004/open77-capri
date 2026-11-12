@@ -52,7 +52,7 @@ URL_RX = re.compile(r"^https://([a-z0-9.-]{3,253})(/[A-Za-z0-9._~/-]{1,200})?/v1
 HOST_RX = re.compile(r"^[a-z0-9.-]{3,253}$")
 WORLD_RX = re.compile(r"^[A-Za-z0-9 ._-]{1,40}$")
 VERSION_RX = re.compile(r"^\d{1,4}(\.\d{1,4}){1,4}$")
-SECRET_RX = re.compile(r"capri-brain-[0-9A-Za-z]{6,}")
+SECRET_RX = re.compile(r"capri-brain-[0-9a-fA-F]{16,}")   # its path: capri-brain-<48 hex>, never a log name
 
 HOOK_WRAP = """
 // Capri reads settings.json once, when the game starts (CapriStorage.OnInitialize): wired right after.

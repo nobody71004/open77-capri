@@ -1341,12 +1341,19 @@ def test_masks():
     import capri_kit as K  # noqa: PLC0415
     import capri_server as S  # noqa: PLC0415
     secret = "capri-voice-" + "9f3a" * 6
-    for name, f in (("kit", K.clean), ("machine", S.clean), ("voz", Z.mask)):
+    brain = "capri-brain-" + "e1f0" * 12
+    for name, f in (("kit", K.clean), ("machine", S.clean), ("voz", Z.mask), ("wire", W.mask)):
         for log in ("capri-voice-staging-20261112-021326.log", "capri-voice-production-20261112-021330.log",
-                    "C:\\Users\\x\\kit\\capri-voice-staging-20261112-021326.log"):
+                    "C:\\Users\\x\\kit\\capri-voice-staging-20261112-021326.log",
+                    # the kit's brain step logs as capri-brain-<time>.log (2026-11-12: printed as capri-brain-<secret>-...)
+                    "capri-brain-20261112-031633.log", "C:\\Users\\x\\kit\\capri-brain-20261112-031633.log"):
             check(f"mask ({name}): a log's name stays readable: {log}", f(f"log {log}") == f"log {log}", f(log))
-        check(f"mask ({name}): her voice's path", f(f"https://h/{secret}/v1/audio/speech") ==
-              "https://h/capri-voice-<secret>/v1/audio/speech", f(secret))
+        if name != "voz":
+            check(f"mask ({name}): the brain's path", f(f"https://h/{brain}/v1/models") ==
+                  "https://h/capri-brain-<secret>/v1/models", f(brain))
+        if name != "wire":
+            check(f"mask ({name}): her voice's path", f(f"https://h/{secret}/v1/audio/speech") ==
+                  "https://h/capri-voice-<secret>/v1/audio/speech", f(secret))
 
 
 def main():

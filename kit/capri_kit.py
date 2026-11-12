@@ -65,7 +65,7 @@ EXTRAS = {"voice": [os.path.join(HERE, "remote", "capri_voice_server.py")],
           "gate": [os.path.join(HERE, "remote", "gate", "gate.js"), os.path.join(HERE, "remote", "gate", "dev-server.js")],
           "brain": [os.path.join(HERE, "remote", "brain", "capri-brain.mjs")]}
 SCC = os.path.join(HERE, "capri_scc.py")
-SECRET_RX = re.compile(r"capri-brain-[0-9A-Za-z]{6,}")
+SECRET_RX = re.compile(r"capri-brain-[0-9a-fA-F]{16,}")   # its path: capri-brain-<48 hex>, never a log name
 VOICE_SECRET_RX = re.compile(r"capri-voice-[0-9a-fA-F]{12,}")   # its path: capri-voice-<24 hex>, never a log name
 IPV4_RX = re.compile(r"\b(?!127\.0\.0\.1\b)(?!0\.0\.0\.0\b)\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b")
 ALREADY = 5

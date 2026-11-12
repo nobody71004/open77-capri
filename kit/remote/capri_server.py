@@ -72,7 +72,7 @@ SYSTEMCTL = os.environ.get("SYSTEMCTL", "systemctl").split()
 STATE_DIR = os.environ.get("CAPRI_KIT_STATE", "/root/capri-kit")
 NGINX = os.environ.get("CAPRI_NGINX", "nginx").split()
 CURL = os.environ.get("CAPRI_CURL", "curl").split()
-SECRET_RX = re.compile(r"capri-brain-[0-9A-Za-z]{6,}")
+SECRET_RX = re.compile(r"capri-brain-[0-9a-fA-F]{16,}")   # its path: capri-brain-<48 hex>, never a log name
 VOICE_SECRET_RX = re.compile(r"capri-voice-[0-9a-fA-F]{12,}")   # its path: capri-voice-<24 hex>
 # Capri's voice on this machine (cmd_voice)
 VOICE_ROOT = os.environ.get("CAPRI_VOICE_ROOT", "/opt/capri-voice")
