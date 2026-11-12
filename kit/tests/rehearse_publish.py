@@ -5,6 +5,10 @@ and the brain's address this PC's own Capri settings use, and takes the import).
 
     python rehearse_publish.py LIVE.zip [--role staging]
 
+1.16.17: the stand-in machine also names her voice (a made-up private path: the build only writes it into
+servidor.json, nothing asks it here) and the build carries Mass Override for everyone and Capri Voz edited -- the
+compile check and PowerShell's own parser run on them for real.
+
 Writes its log, the builds (work\\), the record and the compiler's sandboxes (_scc\\) next to this file.
 """
 from __future__ import annotations
@@ -37,7 +41,24 @@ def main():
     with open(os.path.join(server, "brain.url"), "w", encoding="utf-8") as f:
         f.write(url + "\n")
     sha = hashlib.sha256(open(live, "rb").read()).hexdigest()
+    # the machine's side of fetch and assemble: remote/capri_server.py's own code (pure Python), run here
+    sys.path.insert(0, os.path.join(KIT, "remote"))
+    import capri_server as cs  # noqa: E402
+    import zipfile  # noqa: E402
+    files = cs.read_entries(live)
+    with zipfile.ZipFile(os.path.join(server, "scripts.zip"), "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
+        for n in sorted(files):
+            if (n.startswith("r6/scripts/") and n.endswith(".reds")) or n in cs.EDITABLE_OTHER:
+                info = zipfile.ZipInfo(n, cs.FIXED_TIME)
+                info.compress_type = zipfile.ZIP_DEFLATED
+                z.writestr(info, files[n])
+    with open(os.path.join(server, "manifest.json"), "w", encoding="utf-8") as f:
+        json.dump({"sha256": sha, "entries": {n: hashlib.sha256(b).hexdigest() for n, b in files.items()}}, f)
     imported = {}
+    voice_url = "https://" + url.split("/")[2] + "/capri-voice-" + "5eed" * 6 + "/v1"
+    with open(os.path.join(server, "voice.url"), "w", encoding="utf-8") as f:
+        f.write(voice_url + "\n")
+    ck.ask_voice = lambda u, log: log("  (rehearsal: her voice is not asked -- the stand-in machine has none)") or True
 
     class Host:
         def get(self, remote, local):
@@ -65,7 +86,31 @@ def main():
                 return 0, {"entry": {"version": "1.16.15", "sha256": sha, "sizeBytes": os.path.getsize(live),
                                      "displayName": "Capri - AI Companion with Voice (LLM)"},
                            "world": "XyberRP Staging" if role == "staging" else "XyberRP", "online": 0,
-                           "wired": False, "wired_same": False, "host": url.split("/")[2]}
+                           "wired": False, "wired_same": False, "host": url.split("/")[2],
+                           "voice": {"languages": "en,es"}}
+            if args[0] == "assemble":
+                class Args:
+                    pass
+                x = Args()
+                x.work, x.role = server, role
+                x.delta = os.path.join(server, os.path.basename(args[args.index("--delta") + 1]))
+                x.expect = os.path.join(server, os.path.basename(args[args.index("--expect") + 1]))
+                x.expect_sha = args[args.index("--expect-sha") + 1]
+                import io, contextlib  # noqa: E401,E402
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    try:
+                        code = cs.cmd_assemble(x)
+                    except cs.Failed as e:
+                        print("CAPRI !! " + str(e))
+                        code = 1
+                res = {}
+                for line in buf.getvalue().splitlines():
+                    if line.startswith("CAPRI-RESULT "):
+                        res = json.loads(line[len("CAPRI-RESULT "):])
+                    elif line.startswith("CAPRI "):
+                        self.log("  " + line[6:])
+                return code, res
             if args[0] == "import":
                 z = os.path.join(server, os.path.basename(args[args.index("--zip") + 1]))
                 got = hashlib.sha256(open(z, "rb").read()).hexdigest()
@@ -91,10 +136,11 @@ def main():
         rc = 1
     finally:
         # the stand-in machine's copy of the address: not kept
-        try:
-            os.remove(os.path.join(server, "brain.url"))
-        except OSError:
-            pass
+        for f in ("brain.url", "voice.url"):
+            try:
+                os.remove(os.path.join(server, f))
+            except OSError:
+                pass
     log(f"rehearsal exit {rc}; the build the stand-in machine took: {json.dumps({k: (os.path.basename(v) if k == 'zip' else v) for k, v in imported.items()})}")
     log(f"the full log: {log.path}")
     return rc

@@ -1,5 +1,28 @@
-Capri thinks with the server's brain, for every player (XyberRP and XyberRP Staging)
-=====================================================================================
+Capri for every player (XyberRP and XyberRP Staging): her brain, her own voice, Mass Override for everyone
+==========================================================================================================
+
+Why other PCs heard a Windows voice (2026-11-12)
+  Capri speaks with her real voice only on a PC that installed her local engine ("Install local
+  voice": Pocket TTS and her voice files, about 900 MB) -- the laptop.  Every other PC's Capri Voz
+  fell back to a borrowed Windows voice (on Linux: no voice at all), and the launcher package no
+  longer ships the F1 window where that install button lives.
+  Now her same engine and voice files (Pocket TTS 4.0.1, the laptop's exact version and model
+  revisions) run once on the game servers' machine (/opt/capri-voice, the capri-voice service,
+  its own private address behind nginx with a limit per address).  The package carries
+  CapriVoz\servidor.json, and Capri Voz (Windows and Linux) uses it on launch: "auto" -- the
+  default -- is her local engine when installed, else her voice from the server, else Windows'.
+  A player's own voice choice (ElevenLabs, OpenAI...) is left alone.  Capri Voz logs every line to
+  red4ext\plugins\CapriPersonalityConstruct\CapriVoz\cache\capri_voz.log.
+
+Why a Mass Override showed on the caster's screen only (2026-11-12)
+  The gate's feed only started on a PC after that PC cast once, it only carried the mode for that
+  PC's NEXT cast, and every PC registered with the gate under its V's entity id -- the same on
+  every PC, so one player's recharge blocked everyone's cast at the gate.  Now every game polls its
+  gate from the start of its session under an id of its own; a cast carries where the caster stood
+  and the mode the caster's game runs; and every other game runs it: the street around the cast
+  (machines, lights, cars, the crowd) within 150 m, the city's lights and billboards for everyone.
+  Nobody is turned on a V who did not cast, nothing is charged.  One run is on screen at a time:
+  the next cast first puts the street back as it was.
 
 Why she said "I'm here, V, but disconnected"
   The brain on the game servers' machine works: the web server hands it out at a private address
@@ -36,15 +59,17 @@ The bats (run them in this order)
       (is the brain wired in?), who is on, what the launcher hands out; the brain: where nginx
       serves it, the unit behind it, Ollama and its models, its last requests; from this PC, the
       brain asked the way a player's game asks it (one short question, timed); this PC's Capri.
-  C2-Capri-thinks-with-the-server-on-Staging.bat   LEAVE STAGING FIRST.  Takes the package Staging
-      hands out now, adds the script with the brain's address as nginx serves it (checked from this
-      PC first) and the migrated scripts, compiles it with YOUR GAME'S OWN Redscript compiler on
-      this PC -- the live package first, then the new one; nothing is sent unless it compiles with
-      nothing left to migrate -- puts it into Staging's mod store, names it in server.jsonc (kept
-      first, the server's own --check-config run), adds the brain's limits, restarts Staging and
-      checks what Staging hands out.  Then join Staging from the PC you play on.
-  C3-Capri-thinks-with-the-server-on-XyberRP.bat   The same for live XyberRP -- after Staging was
-      fine in game.  Nobody may be on XyberRP.
+  C2-Capri-brain-voice-and-Mass-Override-on-Staging.bat   LEAVE STAGING FIRST.  1. her voice on
+      the machine (once for the machine: venv, Pocket TTS, her voice files from Staging's package,
+      a test line in English and Spanish, its service, its nginx location with a limit; the web
+      server put back by itself on any failure), asked from this PC; 2. Staging's Mass Override
+      gate updated and asked; 3. the new package: the live one with the brain wired in, Mass
+      Override for everyone and Capri Voz using her server voice, compiled with YOUR GAME'S OWN
+      Redscript and CapriVoz.ps1 checked by PowerShell's own parser -- nothing is sent unless both
+      pass -- into Staging's mod store and server.jsonc (kept first, --check-config run); 4. the
+      brain's limits; 5. Staging restarted; 6. what Staging hands out, checked, her voice asked.
+  C3-Capri-brain-voice-and-Mass-Override-on-XyberRP.bat   The same for live XyberRP -- after
+      Staging was fine in game.  Nobody may be on XyberRP.
   C2b-Put-Staging-Capri-back.bat / C3b-Put-XyberRP-Capri-back.bat   The server's Capri back to the
       build before (still in its mod store), and a restart.
   C2c-Take-the-brain-limits-back-out.bat           The brain's nginx site as it was before the limits.
@@ -65,6 +90,11 @@ Logs (tell Claude "done": it reads them)
   No log holds the brain's private address, a server address or a key.
 
 On the machine
+  /opt/capri-voice: her voice (venv, capri_voice_server.py, voces\, hf\ her models, selftest\);
+  capri-voice.service (user capri-voice, 127.0.0.1:8891, journalctl -u capri-voice: one line per
+  line she said -- never the text); /root/capri-kit/voice.json (0600, her voice's private path);
+  /root/capri-kit/gate/<role>-<time>/ the gate's files before the kit replaced them;
+  /root/capri-kit/nginx/ the site file before every change.
   /opt/open77-xbuniverse-staging/server.jsonc.before-capri-kit-<version>-<time> (and the same for
   /opt/open77-xbuniverse): server.jsonc as it was.  /root/capri-kit/<staging|production>.json:
   what the kit changed, for the put-back.  The new builds sit next to the old ones in each

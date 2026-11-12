@@ -410,6 +410,26 @@ The scripts in this repo name the staging base; `mass-override/release/mo-build-
 
 `scc.exe` pops a modal dialog when a compile fails, which is not acceptable while someone is playing. `scripts/MoScc.cs` (a 70-line wrapper, built with the .NET Framework `csc.exe`) loads the game's own `engine/tools/scc_lib.dll` and calls `scc_settings_disable_error_popup` before `scc_compile`. It compiles a sandbox copy of `r6/scripts` plus the three RED4ext plugin script folders against a copy of `r6/cache/final.redscripts`, so the running game's files are never touched. 1.16.11: `Completed with 603 warnings and 0 errors` (the same 603 as the game's own build); a deliberate call to a missing method failed with `UNRESOLVED_MEMBER` and no dialog.
 
+### 1.16.17: every player runs every cast
+
+On XyberRP a cast showed on the caster's screen and nowhere else. Three faults, all on the multiplayer side:
+
+1. **The feed only started after a cast.** `MassOverrideFeed.Start` ran from `CapriMassOverride.RunWith`, so a game that had not cast never polled the gate at all.
+2. **The feed only carried a mode.** `GET /feed` answered `"<seq> <mode>"`, and the game stored that mode for its own *next* cast (`ReceiveServerMode`). Nothing ran another player's cast.
+3. **Every game was one player at the gate.** Casts registered as `EntityID.ToDebugString(V)`, which is the same on every PC, so one player's 40 s recharge refused everyone else's cast at the gate (and refused casts are not handed out).
+
+What changed:
+
+- **Every game polls from the start of its session.** `MassOverrideRegistry.OnAttach` (a `ScriptableSystem`, so once per session) starts a poller of its own generation; an older session's poller stops at its next tick. The poll re-arms itself every 2 s before anything else and never doubles a request still out (`StuckSeconds` 20).
+- **Each game has its own id.** `MassOverridePrefs.Session()` (random, once per game run) goes with `/players` and `/cast`; the gate keys cooldowns by it and registers an unknown session on its first cast.
+- **A cast carries what others need.** `/cast` sends where V stands (`x`, `y`, `z`), the mode the caster's game runs (the gate takes it instead of its own cursor, so nobody runs the other mode) and a token (`session-n`), which the caster's game remembers so the feed's copy is skipped there.
+- **`GET /casts?since=N&session=S`** answers in plain text: `"<next>"`, then `"<seq> <mode> <x cm> <y cm> <z cm> <age ms> <ms left> <token>"` for every cast still on. The first answer of a session runs what is still on (a player who arrives during a blackout sees its rest). `/feed`, `/players` and `/cast` without a session keep answering older builds.
+- **Another player's cast runs here** (`MassOverrideRemote`): the city's lights and the billboards for everyone in the session (`CityWide()`, they are the whole city's on the caster's screen too), and within `StreetReach()` (150 m) the street around the cast: the attach registry's devices within 120 m of the caster, the first probe from here when within 70 m, then the same per-target levers as the caster's (`MassOverrideApply.Targets`, shared with the caster's own cast) -- but no person is turned on this V, nothing is charged, and the crowd panics from the broadcast only.
+- **One run on screen at a time.** `MassOverrideRevert.Arm` makes a run the active one; the next cast, here or anyone's, first calls `EndActive`, which puts the street back as it was (a run that saved the street mid-beat would put the beat's colours back for good). A revert that ran early does nothing when its scheduled call comes.
+- Every remote run reports `phase: remote` (and `remote-revert`) to the gate with its distance, street/city, counts and the session; the gate logs `[cast]` with the position and how many games are polling, and `[feed] new client ...` for every session that starts polling. `GET /state` lists the pollers and the recent casts.
+
+Checked: the game's own compiler (REDscript 1.0.0-preview.22, the owner's laptop): 107 files, 521 warnings, 0 errors, nothing to migrate; `node --test` for the gate (15 dev-server tests, 5 new: sessions, positions, `/casts`, older builds, bad input, pollers); `reds-lint` clean.
+
 ## Verification status
 
 - Node tests: `gate.test.js` 13, `engine-adapter.test.js` 7, `dev-server.test.js` 10, `reds-lint.test.js` 8, `reds-lint-angle.test.js` 2 - 40/40 pass (run each file with `node --test`).

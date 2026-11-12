@@ -224,10 +224,14 @@ def bump(version: str) -> str:
 
 
 def build(old: bytes, url: str, host: str, world: str, version: str, strategy: str,
-          game: dict[str, bytes] | None = None) -> tuple[bytes, dict]:
+          game: dict[str, bytes] | None = None, extras: dict | None = None) -> tuple[bytes, dict]:
     """The new package from the live one: Capri.ServerBrain.reds added (an older one replaced), the scripts the game
     migrates put in migrated (game: this PC's game folder's Capri files, see migrate) and, for "patch", the one call
-    in Capri.Storage.reds.  Returns (zip bytes, report).  Everything else stays byte for byte."""
+    in Capri.Storage.reds.  extras (1.16.17): {"files": {path: bytes}} put in as they are (Mass Override's two
+    scripts, rendered for the server by capri_mo), {"voice": {"url", "langs"}} Capri Voz speaking with her voice
+    from the server (capri_voz: its two programs edited, servidor.json added).  Returns (zip bytes, report).
+    Everything else stays byte for byte."""
+    import capri_voz as Z  # noqa: PLC0415
     entries = read_zip(old)
     problems = capri_problems(entries)
     if problems:
@@ -253,13 +257,33 @@ def build(old: bytes, url: str, host: str, world: str, version: str, strategy: s
             plain = plain.replace(PATCH_ANCHOR, PATCH_WITH)
         entries[STORAGE] = (plain.replace("\n", "\r\n") if crlf else plain).encode("utf-8")
     entries[TARGET] = render(url, host, world, version, strategy)
+    extra = set()
+    for path, blob in ((extras or {}).get("files") or {}).items():
+        if refusal(path):
+            raise BuildError(f"an extra file the launcher would refuse: {path!r} ({refusal(path)})")
+        if path not in entries:
+            raise BuildError(f"{path} is not in the package: it is replaced, never added")
+        entries[path] = blob
+        extra.add(path)
+    voice = (extras or {}).get("voice")
+    if voice:
+        for path in (Z.PS1, Z.LINUX):
+            if path not in entries:
+                raise BuildError(f"{path} is not in the package: Capri Voz cannot be told about the server's voice")
+        try:
+            entries[Z.PS1], _ = Z.patch_ps1(entries[Z.PS1])
+            entries[Z.LINUX], _ = Z.patch_linux(entries[Z.LINUX])
+            entries[Z.SERVIDOR] = Z.servidor_json(voice["url"], world, version, voice.get("langs") or "en,es")
+        except Z.VozError as e:
+            raise BuildError(str(e)) from e
+        extra |= {Z.PS1, Z.LINUX, Z.SERVIDOR}
     data = write_zip(entries)
 
     # what the zip holds now, read back
     after = read_zip(data)
     changed = sorted(n for n in after if after[n] != before.get(n))
     gone = sorted(n for n in before if n not in after)
-    allowed = {TARGET, STORAGE} | set(migrated)
+    allowed = {TARGET, STORAGE} | set(migrated) | extra
     if gone:
         raise BuildError(f"the build lost {gone}")
     if not set(changed) <= allowed:
@@ -272,6 +296,12 @@ def build(old: bytes, url: str, host: str, world: str, version: str, strategy: s
         raise BuildError("the patched Capri.Storage.reds does not call the wiring exactly once")
     if strategy == "wrap" and PATCH_MARK in after[STORAGE].decode("utf-8"):
         raise BuildError("a wrap build still has the patch in Capri.Storage.reds")
+    if voice:
+        sv = Z.servidor_values(after.get(Z.SERVIDOR, b""))
+        if sv.get("url") != voice["url"] or sv.get("mundo") != world or sv.get("paquete") != version:
+            raise BuildError("servidor.json in the build does not say what was put in")
+        if Z.MARK.encode() not in after[Z.PS1] or Z.MARK.encode() not in after[Z.LINUX]:
+            raise BuildError("Capri Voz in the build does not carry the server voice")
     report = {
         "entries": len(after),
         "changed": changed,
@@ -284,6 +314,8 @@ def build(old: bytes, url: str, host: str, world: str, version: str, strategy: s
         "had": {k: (v if k != "Url" else ("the same address" if v == url else "another address")) for k, v in had.items()},
         "migrated": migrated,
         "other_version_here": other,
+        "extra": sorted(extra),
+        "voice": ({"host": voice["url"].split("/")[2], "langs": voice.get("langs")} if voice else None),
         "scripts_sha256": scripts_digest(after),
     }
     return data, report

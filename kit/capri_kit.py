@@ -21,6 +21,16 @@ on the PC that has the fivem2open77 Studio (its SSH code, keys and Python) and t
     python capri_kit.py guard   --host ...                    per-address limits on the brain's nginx location
     python capri_kit.py guard-putback --host ...              the brain's nginx site as it was before them
     python capri_kit.py player  [--game DIR]                  READ ONLY, no server: this PC's Capri (as in check)
+    python capri_kit.py voice   [--role ROLE] --host ...      her own voice for every player, on the machine
+        (remote/capri_voice_server.py: Pocket TTS 4.0.1 with her voice states from ROLE's package, its own unit and
+        an nginx location with a private path and per-address limits; nothing when it is there and answering);
+        then asked from this PC the way a player's Capri Voz asks it: one line in English, one in Spanish.
+    python capri_kit.py gate    --role ROLE --host ...        ROLE's Mass Override gate updated (remote/gate/): every
+        game polls it from its start and runs everyone's casts; asked from this PC afterwards.
+    publish (1.16.17) also puts into the package: Mass Override's two scripts with ROLE's gate in them (every player
+        runs every cast, template/mass-override/), and Capri Voz speaking with her voice from the machine
+        (capri_voz.py: servidor.json added, CapriVoz.ps1 and its Linux twin edited, the edits checked by PowerShell's
+        own parser here) -- refused while her voice is not on the machine.
 
 Exit 0 done; 3 nothing changed (players on, or the live build changed: run it again); 5 the brain is already wired
 in with this address (nothing to do); 1 something failed; 2 this PC cannot check the package (no game/compiler).
@@ -46,17 +56,23 @@ import urllib.request
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import capri_wire as W  # noqa: E402
+import capri_mo as MO  # noqa: E402
+import capri_voz as Z  # noqa: E402
 
 REMOTE = os.path.join(HERE, "remote", "capri_server.py")
+EXTRAS = {"voice": [os.path.join(HERE, "remote", "capri_voice_server.py")],
+          "gate": [os.path.join(HERE, "remote", "gate", "gate.js"), os.path.join(HERE, "remote", "gate", "dev-server.js")]}
 SCC = os.path.join(HERE, "capri_scc.py")
 SECRET_RX = re.compile(r"capri-brain-[0-9A-Za-z]{6,}")
+VOICE_SECRET_RX = re.compile(r"capri-voice-[0-9A-Za-z]{6,}")
 IPV4_RX = re.compile(r"\b(?!127\.0\.0\.1\b)(?!0\.0\.0\.0\b)\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b")
 ALREADY = 5
 ROLE_NAMES = {"staging": "open77-xbuniverse-staging", "production": "open77-xbuniverse"}
 
 
 def clean(text) -> str:
-    return IPV4_RX.sub("<addr>", SECRET_RX.sub("capri-brain-<secret>", str(text)))
+    text = VOICE_SECRET_RX.sub("capri-voice-<secret>", SECRET_RX.sub("capri-brain-<secret>", str(text)))
+    return IPV4_RX.sub("<addr>", text)
 
 
 class Log:
@@ -100,9 +116,10 @@ def av():
 class Machine:
     """One SSH session to the game servers' machine, the way av_kit.py (the Studio's SSH code) signs in."""
 
-    def __init__(self, a, log):
+    def __init__(self, a, log, extra=()):
         self.av = av()
         self.log = log
+        self.extra = [p for k in extra for p in EXTRAS[k]]
         hosts, secrets = self.av.load_hosts(a, lambda t, quiet=False: log(t, quiet=True))
         (_, group), = list(hosts.items())[:1]
         self.h = self.av.Host(group[0], secrets, lambda t, quiet=False: log(t, quiet=quiet))
@@ -111,6 +128,8 @@ class Machine:
     def __enter__(self):
         self.work = self.h.workdir()
         self.h.put(REMOTE, posixpath.join(self.work, "capri_server.py"), 0o644)
+        for p in self.extra:
+            self.h.put(p, posixpath.join(self.work, os.path.basename(p)), 0o644)
         return self
 
     def __exit__(self, *exc):
@@ -180,6 +199,79 @@ def ask_brain(url, log, chat=True):
     except (urllib.error.URLError, OSError, ValueError) as e:
         log(f"  !! the question from this PC got no answer after {time.time() - t0:.1f} s: {clean(e)}")
         return False
+
+
+# ------------------------------------------------------------------------------------------------ her voice, from here
+def wav_seconds(data: bytes) -> float:
+    import io  # noqa: PLC0415
+    import wave  # noqa: PLC0415
+    with wave.open(io.BytesIO(data)) as w:
+        return w.getnframes() / float(w.getframerate())
+
+
+def ask_voice(url, log):
+    """Her voice the way a player's Capri Voz asks it (HTTPS, the certificate checked): one line in English and one
+    in Spanish, timed. True when both came back as audio in her own voice."""
+    host = url.split("/")[2]
+    ctx = ssl.create_default_context()
+    ok = True
+    for lang, text in (("en", "V, it's Capri. You hear me with my own voice now, from the server."),
+                       ("es", "V, soy Capri. Ahora me oyes con mi propia voz, desde el servidor.")):
+        body = json.dumps({"model": "capri-voice", "input": text, "voice": "capri", "language": lang,
+                           "response_format": "wav"}).encode("utf-8")
+        t0 = time.time()
+        try:
+            req = urllib.request.Request(url + "/audio/speech", data=body, method="POST",
+                                         headers={"Content-Type": "application/json", "Accept": "audio/wav"})
+            with urllib.request.urlopen(req, timeout=90, context=ctx) as r:
+                data = r.read()
+                voice = r.headers.get("X-Capri-Voice")
+                gen = r.headers.get("X-Capri-Generated-Ms")
+            secs = wav_seconds(data)
+            good = data[:4] == b"RIFF" and secs >= 1.0 and voice == "capri"
+            log(f"  from this PC, as a player's Capri Voz asks it: https://{host}/capri-voice-<secret>/v1/audio/speech "
+                f"({lang}) -> {len(data)} B, {secs:.1f} s of audio in {time.time() - t0:.1f} s (made in {gen} ms on "
+                f"the server), voice {voice}" + ("" if good else "  !! not her own voice, or not audio"))
+            ok = ok and good
+        except (urllib.error.URLError, OSError, ValueError, EOFError) as e:
+            log(f"  !! her voice did not answer from this PC ({lang}) after {time.time() - t0:.1f} s: {clean(e)}")
+            ok = False
+    return ok
+
+
+def check_capri_voz(entries, log):
+    """The edited Capri Voz checked here before anything is sent: CapriVoz.ps1 with PowerShell's own parser (no
+    error), its Linux twin compiled by Python."""
+    ok = True
+    ps1 = entries.get(Z.PS1)
+    if ps1 is not None and sys.platform == "win32":
+        path = os.path.join(HERE, "_scc", "CapriVoz.check.ps1")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(ps1)
+        cmd = ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+               "$e = $null; $t = $null; [void][System.Management.Automation.Language.Parser]::ParseFile("
+               f"'{path}', [ref]$t, [ref]$e); \"ERRORS $($e.Count)\"; $e | ForEach-Object {{ $_.Message }}"]
+        try:
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            out = (p.stdout or "").strip()
+            n = re.search(r"ERRORS (\d+)", out)
+            if n and n.group(1) == "0":
+                log(f"  CapriVoz.ps1 as edited: PowerShell's own parser finds no error ({len(ps1)} B)")
+            else:
+                ok = False
+                log("  !! CapriVoz.ps1 as edited does not parse: " + " | ".join(out.splitlines()[:6]))
+        except (OSError, subprocess.TimeoutExpired) as e:
+            log(f"  (PowerShell's parser could not be asked: {e}; the build's own checks stand)")
+    lin = entries.get(Z.LINUX)
+    if lin is not None:
+        try:
+            compile(lin.decode("utf-8"), "capri_voz_linux.py", "exec")
+            log("  capri_voz_linux.py as edited: Python compiles it")
+        except (SyntaxError, UnicodeDecodeError) as e:
+            ok = False
+            log(f"  !! capri_voz_linux.py as edited does not compile: {e}")
+    return ok
 
 
 # ------------------------------------------------------------------------------------------------ this PC's Capri
@@ -272,6 +364,16 @@ def cmd_check(a, log):
         else:
             log("  !! the brain's address could not be read from the machine")
             rc = 1
+        if code == 0 and (fres.get("voice") or {}).get("languages"):
+            log("===== her voice from this PC (read only)")
+            local = os.path.join(HERE, "work", f"voice-{time.strftime('%Y%m%d-%H%M%S')}.url")
+            m.h.get(posixpath.join(m.work, "voice.url"), local)
+            voice_url = open(local, encoding="utf-8").read().strip()
+            os.remove(local)
+            if not ask_voice(voice_url, log):
+                rc = 1
+        else:
+            log("  (her voice is not on the machine yet: " + str((fres.get("voice") or {}).get("why")) + ")")
     log("===== this PC's Capri (read only)")
     player(find_game(a.game), log)
     return rc
@@ -324,29 +426,68 @@ def cmd_publish(a, log):
             log(f"  {res['online']} connection(s) on {world} now: NOTHING done (the new Capri reaches players at a "
                 f"restart) -- leave {world} (quit to the menu) and run the bat again")
             return 3
-        old_zip = os.path.join(work, f"capri-{role}-{entry['version']}-live.zip")
-        m.h.get(posixpath.join(m.work, "capri-current.zip"), old_zip)
+        # only the live package's scripts and every file's hash come here (a few hundred KB): this PC's uplink is
+        # slow (26 MB went at 13 KB/s, 2026-11-12), so the package itself is made on the machine (assemble)
+        old_zip = os.path.join(work, f"capri-{role}-{entry['version']}-live-scripts.zip")
+        m.h.get(posixpath.join(m.work, "scripts.zip"), old_zip)
+        man_path = os.path.join(work, f"capri-{role}-{entry['version']}-live-manifest.json")
+        m.h.get(posixpath.join(m.work, "manifest.json"), man_path)
         local_url = os.path.join(work, "brain.url")
         m.h.get(posixpath.join(m.work, "brain.url"), local_url)
         url = open(local_url, encoding="utf-8").read().strip()
         os.remove(local_url)
+        voice_url = None
+        if (res.get("voice") or {}).get("languages"):
+            local_voice = os.path.join(work, "voice.url")
+            m.h.get(posixpath.join(m.work, "voice.url"), local_voice)
+            voice_url = open(local_voice, encoding="utf-8").read().strip()
+            os.remove(local_voice)
+        if not voice_url:
+            raise Failed("her voice is not on the machine yet (" + str((res.get("voice") or {}).get("why")) + "): the "
+                         "package would have no voice to name -- the bat installs it first (capri_kit.py voice)")
         old = open(old_zip, "rb").read()
-        if W.sha256(old) != entry["sha256"]:
-            raise Failed("the package copied here does not hash to what server.jsonc names")
-        log(f"  copied here: {os.path.basename(old_zip)} ({len(old)} B, sha256 {entry['sha256'][:16]}... as named)")
+        manifest = json.load(open(man_path, encoding="utf-8"))
+        if manifest.get("sha256") != entry["sha256"]:
+            raise Failed("the machine's list of the package's files is not of the build server.jsonc names")
+        scripts = W.read_zip(old)
+        bad = [n for n, b in scripts.items() if manifest["entries"].get(n) != W.sha256(b)]
+        if bad or not scripts:
+            raise Failed(f"the scripts copied here do not hash as the live package's: {bad[:3]}")
+        log(f"  copied here: the live package's {len(scripts)} scripts ({len(old)} B) and the hashes of its "
+            f"{len(manifest['entries'])} files (sha256 {entry['sha256'][:16]}... as named)")
         host = url.split("/")[2]
         log(f"===== 2. the brain from this PC, as a player's game will ask it ({host})")
         if not ask_brain(url, log):
             raise Failed("the brain does not answer from this PC: a player's Capri could not think with it either")
+        log(f"===== 2b. her voice from this PC, as a player's Capri Voz will ask it")
+        if not ask_voice(voice_url, log):
+            raise Failed("her voice does not answer from this PC: a player's Capri Voz could not use it either")
+        langs = Z.languages(manifest["entries"])
+
+        def extras_for(v):
+            return {"files": MO.render(role, v), "voice": {"url": voice_url, "langs": langs}}
         if res.get("wired_same") and not a.rebuild:
-            log(f"  {world}'s package already has the brain wired in with this address: nothing to do")
-            return ALREADY
+            # the same build again (the live version): nothing would change -> nothing to do
+            game_now = find_game(a.game)
+            try:
+                _, same = W.build(old, url, host, world, entry["version"], "patch",
+                                  game=game_capri_files(game_now) if game_now else {}, extras=extras_for(entry["version"]))
+                if not same["changed"]:
+                    log(f"  {world}'s package already has the brain, her voice and Mass Override for everyone, as this "
+                        f"kit builds them: nothing to do")
+                    return ALREADY
+                log(f"  {world}'s package has the brain wired in, but not (all of) this build: "
+                    + ", ".join(posixpath.basename(n) for n in same["changed"]))
+            except W.BuildError as e:
+                log(f"  (the live build could not be rebuilt as it is: {clean(e)})")
         version = W.bump(entry["version"])
-        log(f"===== 3. Capri {version} for {world}: the live {entry['version']} + Capri.ServerBrain.reds, its scripts "
-            f"as REDscript migrates them, checked with the game's own Redscript on this PC")
+        log(f"===== 3. Capri {version} for {world}: the live {entry['version']} + Capri.ServerBrain.reds, Mass Override "
+            f"for every player (its gate: {MO.BASES[role][0].split('/', 3)[-1]}), Capri Voz speaking with her voice "
+            f"from the server ({langs}), its scripts as REDscript migrates them, checked with the game's own Redscript "
+            f"on this PC")
         game = find_game(a.game)
         here = game_capri_files(game) if game else {}
-        base_zip = os.path.join(work, f"capri-{role}-{entry['version']}-live-migrated.zip")
+        base_zip = os.path.join(work, f"capri-{role}-{entry['version']}-live-migrated-scripts.zip")
         base_data, migrated, other = W.migrated_only(old, here)
         with open(base_zip, "wb") as f:
             f.write(base_data)
@@ -373,18 +514,19 @@ def cmd_publish(a, log):
         chosen = None
         for hook in hooks:
             try:
-                data, rep = W.build(old, url, host, world, version, hook, game=here)
+                data, rep = W.build(old, url, host, world, version, hook, game=here, extras=extras_for(version))
             except W.BuildError as e:
                 log(f"  {hook}: not built: {clean(e)}")
                 continue
-            new_zip = os.path.join(work, f"CapriPersonalityConstruct-{version}-{role}-{hook}.zip")
+            new_zip = os.path.join(work, f"capri-{role}-{version}-{hook}-scripts.zip")
             with open(new_zip, "wb") as f:
                 f.write(data)
-            log(f"  {hook}: built {os.path.basename(new_zip)}: {rep['entries']} files, {len(rep['changed'])} changed "
-                f"({', '.join(posixpath.basename(n) for n in rep['changed'])}); sha256 {rep['sha256'][:16]}..., "
-                f"{rep['size']} B")
+            log(f"  {hook}: built the scripts ({rep['entries']}), {len(rep['changed'])} changed: "
+                f"{', '.join(posixpath.basename(n) for n in rep['changed'])}")
             code, cres = compile_check(new_zip, f"{role}-{version}-{hook}", a, log)
             if code == 0 and cres.get("ok"):
+                if not check_capri_voz(W.read_zip(data), log):
+                    raise Failed("Capri Voz as edited does not pass its checks here: NOTHING was sent")
                 chosen = (hook, new_zip, data, rep)
                 break
             log(f"  {hook}: the compiler refuses it (exit {code})" + ("; the other way next" if hook != hooks[-1] else ""))
@@ -392,9 +534,30 @@ def cmd_publish(a, log):
             raise Failed("no build compiles with the game's own Redscript: NOTHING was sent (the compiler's lines are "
                          "above, its log in the _scc folder here)")
         hook, new_zip, data, rep = chosen
-        log(f"===== 4. Capri {version} ({hook}) to {world}: into its hosted store and named in server.jsonc")
-        m.h.put(new_zip, posixpath.join(m.work, os.path.basename(new_zip)), 0o644)
-        args = ["import", "--role", role, "--zip", posixpath.join(m.work, os.path.basename(new_zip)),
+        log(f"===== 4. Capri {version} ({hook}) to {world}: made on the machine, into its hosted store, named in "
+            f"server.jsonc")
+        # what goes up: only the scripts this build changed, and the hash every file of the package must have
+        built = W.read_zip(data)
+        delta = {n: built[n] for n in rep["changed"]}
+        expect = dict(manifest["entries"])
+        expect.update({n: W.sha256(b) for n, b in delta.items()})
+        delta_zip = os.path.join(work, f"capri-{role}-{version}-{hook}-changes.zip")
+        with open(delta_zip, "wb") as f:
+            f.write(W.write_zip(delta))
+        expect_json = os.path.join(work, f"capri-{role}-{version}-{hook}-expect.json")
+        with open(expect_json, "w", encoding="utf-8") as f:
+            json.dump(expect, f, indent=1, sort_keys=True)
+        t0 = time.time()
+        m.h.put(delta_zip, posixpath.join(m.work, "changes.zip"), 0o644)
+        m.h.put(expect_json, posixpath.join(m.work, "expect.json"), 0o644)
+        log(f"  sent: the {len(delta)} changed script(s) ({os.path.getsize(delta_zip)} B) and the hashes of all "
+            f"{len(expect)} files, in {time.time() - t0:.1f} s")
+        code, ares = m.call("assemble", "--role", role, "--delta", posixpath.join(m.work, "changes.zip"),
+                            "--expect", posixpath.join(m.work, "expect.json"), "--expect-sha", entry["sha256"])
+        if code != 0 or not ares.get("sha256"):
+            raise Failed(f"the machine could not make the package as built here: {ares.get('failed') or code} -- "
+                         f"NOTHING changed on {world}")
+        args = ["import", "--role", role, "--zip", posixpath.join(m.work, "assembled.zip"),
                 "--version", version, "--expect-sha", entry["sha256"]]
         if a.force:
             args.append("--force")
@@ -403,13 +566,14 @@ def cmd_publish(a, log):
             return 3
         if code != 0 or not ires.get("changed"):
             raise Failed(f"{world} did not take the build: {ires.get('why') or ires.get('failed') or code}")
-        record = {"role": role, "world": world, "version": version, "sha256": rep["sha256"], "size": rep["size"],
-                  "hook": hook, "from": entry, "at": stamp, "zip": os.path.basename(new_zip),
-                  "scripts_sha256": rep["scripts_sha256"], "host": host, "migrated": rep.get("migrated")}
+        record = {"role": role, "world": world, "version": version, "sha256": ares["sha256"],
+                  "size": ares.get("sizeBytes"), "hook": hook, "from": entry, "at": stamp,
+                  "changed": sorted(delta), "scripts_sha256": rep["scripts_sha256"], "host": host,
+                  "migrated": rep.get("migrated"), "voice": rep.get("voice"), "mass_override": MO.BASES[role][1]}
         with open(os.path.join(HERE, f"last-{role}.json"), "w", encoding="utf-8") as f:
             json.dump(record, f, indent=2)
-        log(f"  {world} names Capri {version} now (sha256 {rep['sha256'][:16]}...); players get it from its next start "
-            f"(the bat restarts it next)")
+        log(f"  {world} names Capri {version} now (sha256 {ares['sha256'][:16]}...); players get it from its next "
+            f"start (the bat restarts it next)")
     return 0
 
 
@@ -426,12 +590,74 @@ def cmd_verify(a, log):
     if not sha or not version:
         log(f"  (no build of this kit is recorded here for {a.role}: the build the server names now is checked)")
         sha, version = "live", "live"
+    voice_url = None
     with Machine(a, log) as m:
         code, res = m.call("verify", "--role", a.role, "--sha", sha, "--version", version)
-    if code == 0 and res.get("ok"):
-        log(f"===== what players of {res.get('role')} get now: Capri {version}, the brain wired in -- checked")
+        local = os.path.join(HERE, "work", f"voice-{time.strftime('%Y%m%d-%H%M%S')}.url")
+        os.makedirs(os.path.dirname(local), exist_ok=True)
+        try:
+            m.h.get(posixpath.join(m.work, "voice.url"), local)
+            voice_url = open(local, encoding="utf-8").read().strip()
+        except Exception:  # noqa: BLE001 -- no voice there: verify said why
+            voice_url = None
+        finally:
+            if os.path.exists(local):
+                os.remove(local)
+    voice_ok = True
+    if voice_url:
+        log("===== her voice from this PC, as a player's Capri Voz asks it")
+        voice_ok = ask_voice(voice_url, log)
+    if code == 0 and res.get("ok") and voice_ok:
+        log(f"===== what players of {res.get('role')} get now: Capri {version}, the brain wired in, her voice from the "
+            f"server, Mass Override for every player -- checked")
         return 0
     return 1
+
+
+def cmd_voice(a, log):
+    """Her voice for every player on the machine (remote/capri_server.py voice): once for the machine, then asked from
+    this PC."""
+    with Machine(a, log, extra=("voice",)) as m:
+        log("===== her voice on the game servers' machine (Pocket TTS with her own voice states; once for the machine)")
+        args = ["voice"] + (["--role", a.role] if a.role else [])
+        code, res = m.call(*args, timeout=3600)
+        url = None
+        if code in (0, 3):
+            local = os.path.join(HERE, "work", f"voice-{time.strftime('%Y%m%d-%H%M%S')}.url")
+            os.makedirs(os.path.dirname(local), exist_ok=True)
+            m.h.get(posixpath.join(m.work, "voice.url"), local)
+            url = open(local, encoding="utf-8").read().strip()
+            os.remove(local)
+    if code not in (0, 3) or not url:
+        return 1
+    log("===== her voice from this PC")
+    return 0 if ask_voice(url, log) else 1
+
+
+def cmd_gate(a, log):
+    """ROLE's Mass Override gate updated (remote/capri_server.py gate), then asked from this PC."""
+    with Machine(a, log, extra=("gate",)) as m:
+        log(f"===== {a.role}'s Mass Override gate: every game gets every cast")
+        code, res = m.call("gate", "--role", a.role)
+    if code not in (0, 3):
+        return 1
+    return 0 if ask_gate(MO.BASES[a.role][0], log) else 1
+
+
+def ask_gate(base, log):
+    """The gate the way a game polls it (HTTPS, the certificate checked): GET /casts answers with its cursor."""
+    t0 = time.time()
+    try:
+        with urllib.request.urlopen(base + "/casts?since=0&session=capri-kit-pc", timeout=30,
+                                    context=ssl.create_default_context()) as r:
+            text = r.read().decode("utf-8", errors="replace")
+        first = text.splitlines()[0] if text else ""
+        log(f"  from this PC, as a game polls it: {base.split('/', 3)[-1]}/casts -> 200 in {time.time() - t0:.2f} s "
+            f"(cursor {first}, {max(0, len(text.splitlines()) - 1)} cast(s) on now)")
+        return bool(re.match(r"^\d+$", first))
+    except (urllib.error.URLError, OSError) as e:
+        log(f"  !! the gate does not answer from this PC: {clean(e)}")
+        return False
 
 
 def cmd_guard(a, log):
@@ -463,7 +689,8 @@ def cmd_putback(a, log):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("command", choices=["check", "publish", "verify", "putback", "player", "guard", "guard-putback"])
+    ap.add_argument("command", choices=["check", "publish", "verify", "putback", "player", "guard", "guard-putback",
+                                        "voice", "gate"])
     ap.add_argument("--role", default="", choices=["", "staging", "production"])
     ap.add_argument("--roles", default="")
     ap.add_argument("--hook", default="auto", choices=["auto", "wrap", "patch"])
@@ -489,12 +716,12 @@ def main(argv=None):
     log = Log(os.path.join(HERE, f"capri-{tag}-{time.strftime('%Y%m%d-%H%M%S')}.log"))
     log(f"capri_kit {tag}: Python {sys.version.split()[0]} on {sys.platform}; log {log.path}")
     try:
-        if a.command in ("publish", "verify", "putback") and not a.role:
+        if a.command in ("publish", "verify", "putback", "gate") and not a.role:
             raise Failed("--role staging or production")
         if a.command != "player" and not (a.host and a.key_from):
             raise Failed("--host USER@HOST and --key-from STUDIO_ID (the bat gives them)")
         rc = {"check": cmd_check, "publish": cmd_publish, "verify": cmd_verify, "putback": cmd_putback,
-              "guard": cmd_guard, "guard-putback": cmd_guard,
+              "guard": cmd_guard, "guard-putback": cmd_guard, "voice": cmd_voice, "gate": cmd_gate,
               "player": lambda a, log: (player(find_game(a.game), log) or 0)}[a.command](a, log)
     except (Failed, W.BuildError) as e:
         log(f"!! {e}")

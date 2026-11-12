@@ -45,10 +45,14 @@ test("both HTTP objects keep themselves alive while a request is in flight", () 
   const text = fs.readFileSync(path.join(ROOT, "Open77", "Open77MassOverride.reds"), "utf8");
   const rearm = text.match(/DelayCallback\(this,/g) || [];
   assert.equal(rearm.length, 2, "the feed poll and the cast post must each re-arm themselves");
-  assert.ok(
-    /DelayCallback\(this,[\s\S]{0,120}AsyncHttpClient\.Get/.test(text),
-    "the poll must be armed before its request",
-  );
+  // the poll re-arms at the top of every Call, before any early return and before its request
+  const poll = text.slice(text.indexOf("public class MassOverrideFeedPoll"), text.indexOf("public class MassOverrideRemote"));
+  const call = poll.slice(poll.indexOf("public func Call()"), poll.indexOf("private cb func OnReply"));
+  assert.ok(call.indexOf("DelayCallback(this,") > 0, "the poll re-arms itself");
+  assert.ok(call.indexOf("DelayCallback(this,") < call.indexOf("AsyncHttpClient.Get"), "the poll must be armed before its request");
+  assert.ok(call.indexOf("DelayCallback(this,") < call.indexOf("if this.inFlight"), "armed before the in-flight guard returns");
+  assert.ok(/if now - this\.sentAt < MassOverrideFeed\.StuckSeconds\(\) \{ return; \}/.test(call), "a request still out is not doubled");
+  assert.ok(/private cb func OnReply/.test(poll), "the poll's reply handler is a cb");
   assert.ok(/if this\.keepAlive \{/.test(text), "the cast keep-alive firing must not re-arm");
 });
 

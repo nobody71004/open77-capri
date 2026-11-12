@@ -185,6 +185,9 @@ public class CapriMassOverride extends IScriptable {
                 return "Mass Override is still recharging: " + ToString(left) + "s";
             }
         }
+        // The run on screen (an earlier cast's, or another player's run here) is put back first: this
+        // cast saves the street as it is, not halfway through a beat.
+        MassOverrideRevert.EndActive(game, "a new cast here");
         let stats: ref<MassOverrideStats> = new MassOverrideStats();
         // Probes chain outward from V, so this reaches past 40 m and around corners.
         let targets = MassOverrideProbe.Collect(player, CapriMassOverride.Cap(), stats);
@@ -205,15 +208,18 @@ public class CapriMassOverride extends IScriptable {
                 Cast<StatsObjectID>(player.GetEntityID()), gamedataStatPoolType.Memory, -cost, player, false, false);
         }
         if IsDefined(prefs) { prefs.MarkCastAt(started); }
-        // The room's beat only matters once this client is casting, so the feed starts
-        // here and then keeps itself alive on the delay system.
-        if IsDefined(prefs) {
-            MassOverrideFeed.Start(game);
-        }
-        // Tell the staging gate about this cast. The server picks the mode and enforces
-        // cooldown and cost; the local cast below still runs if the server is unreachable.
-        MassOverrideCastPost.Register(game, playerId, MassOverrideCastPost.Body(player, targets));
+        // Every game follows the gate's feed from the start of its session (MassOverrideRegistry);
+        // a session that started none gets one now.
+        MassOverrideFeed.Ensure(game);
         let blackout: Bool = mode == MassOverrideMode.Blackout();
+        // Tell the gate about this cast: it keeps this game's recharge and hands the cast -- where V
+        // stands, the mode this game runs, its token -- to every other game in the session, which runs
+        // it too (MassOverrideRemote). The local cast below still runs if the server is unreachable.
+        let token: String = "";
+        if IsDefined(prefs) {
+            token = prefs.NewToken();
+        }
+        MassOverrideCastPost.Register(game, playerId, MassOverrideCastPost.Body(player, targets, blackout ? "blackout" : "blink", token));
         stats.classes = MassOverrideProbe.Classes(targets);
         // The city's own lights: street lamps, building lights and neon answer to the city
         // light system, not to anything a probe reaches one at a time. Blink opens with
@@ -232,82 +238,12 @@ public class CapriMassOverride extends IScriptable {
         stats.area = MassOverrideArea.Name(game, player.GetWorldPosition());
         stats.nearestCut = -1.0;
         stats.nearestHack = -1.0;
-        let camera: ref<CameraSystem> = GameInstance.GetCameraSystem(game);
-        let here: Vector4 = player.GetWorldPosition();
         // The beat's shared state: what it switches and recolours, and when it must stop
         // (a little before the revert, MassOverrideRun).
         let run: ref<MassOverrideRun> = MassOverrideRun.Start(game, CapriMassOverride.Duration());
-        let i: Int32 = 0;
-        while i < ArraySize(targets) {
-            let object: ref<GameObject> = GameInstance.FindEntityByID(game, targets[i].entityId) as GameObject;
-            if targets[i].kind == MassOverrideKind.Person() {
-                // People turn on V in both modes, and each is scared by name, so
-                // someone out of the broadcast's line still runs.
-                MassOverrideEffects.SetHostile(object as NPCPuppet, player, true);
-                stats.hostile += 1;
-                if MassOverridePeople.Scare(player, object as NPCPuppet) {
-                    stats.terror += 1;
-                }
-                // Only ambient crowd runs from a panic; other players' puppets and
-                // server-managed NPCs do not, which is what the count tells apart.
-                let puppet: ref<ScriptedPuppet> = object as ScriptedPuppet;
-                if IsDefined(puppet) && puppet.IsCrowd() {
-                    stats.crowd += 1;
-                }
-            } else {
-                if targets[i].kind == MassOverrideKind.Vehicle() {
-                    // A car with crowd at the wheel floors it, alarm going; a parked one's
-                    // alarm goes off; one someone else is in honks.
-                    let car: Int32 = MassOverrideCars.Hack(game, object as VehicleObject, targets[i]);
-                    if car == MassOverrideCars.Accelerate() {
-                        stats.accelerated += 1;
-                    }
-                    if car == MassOverrideCars.Alarm() {
-                        stats.alarms += 1;
-                    }
-                    if car == MassOverrideCars.Honk() {
-                        stats.honks += 1;
-                    }
-                    if car != MassOverrideCars.None() {
-                        stats.changed += 1;
-                        MassOverrideHack.Seen(stats, camera, object, here);
-                    }
-                } else {
-                    // Machines and screens glitch the way V's own hack makes them, with the
-                    // EMP's sparks; lights go on the beat; doors, loot and terminals are
-                    // reported and left alone.
-                    let hit: Bool = false;
-                    if MassOverrideHack.Glitchable(object) {
-                        if MassOverrideHack.Glitch(targets[i], object) {
-                            stats.glitched += 1;
-                            stats.lightComponents += MassOverrideLights.Collect(run, object);
-                            hit = true;
-                        }
-                        if MassOverrideHack.Emp(targets[i], object, CapriMassOverride.Duration()) {
-                            stats.emp += 1;
-                        }
-                    } else {
-                        if MassOverrideHack.Strobable(object) {
-                            if MassOverrideHack.StrobeStart(targets[i], object, !blackout) {
-                                stats.strobed += 1;
-                                stats.lightComponents += MassOverrideLights.Collect(run, object);
-                                if targets[i].stateOn {
-                                    stats.strobeLitBefore += 1;
-                                }
-                                hit = true;
-                            }
-                        } else {
-                            stats.notHacked += 1;
-                        }
-                    }
-                    if hit {
-                        stats.changed += 1;
-                        MassOverrideHack.Seen(stats, camera, object, here);
-                    }
-                }
-            }
-            i += 1;
-        }
+        // People turn on V and are scared by name; cars, machines, screens and lights are hacked
+        // (MassOverrideApply: the same for another player's cast run on another screen).
+        MassOverrideApply.Targets(game, player, targets, run, stats, blackout, true);
         // Billboards, ad screens and wall screens are ink, not devices: the world ink layers'
         // roots and the world widgets go on the same beat (MassOverrideInk). The first beat
         // lands now, with the cast, and V's own screen glitches as the wave goes out.
@@ -320,6 +256,7 @@ public class CapriMassOverride extends IScriptable {
         // The counts go to the gate over HTTP. A cast that throws inside the loop above
         // never reaches this, so a missing report is itself the diagnosis.
         MassOverrideCastPost.Report(game, "{\"phase\":\"cast\",\"playerId\":" + MassOverrideLog.Quote(playerId)
+            + ",\"token\":" + MassOverrideLog.Quote(token)
             + ",\"build\":\"" + MassOverrideBuild.Version() + "\""
             + ",\"mode\":\"" + (blackout ? "blackout" : "blink") + "\""
             + ",\"probes\":" + ToString(stats.probes)
@@ -401,7 +338,7 @@ public class CapriMassOverride extends IScriptable {
         revert.targets = targets;
         revert.playerId = playerId;
         revert.run = run;
-        GameInstance.GetDelaySystem(game).DelayCallback(revert, CapriMassOverride.Duration(), false);
+        MassOverrideRevert.Arm(game, revert, CapriMassOverride.Duration());
         // What actually took, read back once the queued switches have run, again after
         // the revert, and once more after the last picture so its line is sent too.
         let verify: ref<MassOverrideVerify> = new MassOverrideVerify();

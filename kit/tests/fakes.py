@@ -14,7 +14,14 @@ import stat
 import tempfile
 import textwrap
 import threading
+import wave
 import zipfile
+
+sys_path_kit = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+import sys  # noqa: E402
+if sys_path_kit not in sys.path:
+    sys.path.insert(0, sys_path_kit)
+import capri_voz as Z  # noqa: E402
 
 SECRET = "capri-brain-" + "0123456789abcdef" * 3
 HOST = "xyberrp.duckdns.org"
@@ -78,16 +85,31 @@ STORAGE_REDS = textwrap.dedent('''\
     ''')
 
 
+# Capri Voz as far as the kit's edits care: every place an edit is made, once each, in order (the real files are
+# tested in test_voz_real when they are at hand)
+def voz_fixture(edits, bom=False) -> bytes:
+    text = "# Capri Voz (a stand-in for the tests)\n" + "\n# ...\n".join(old for _, old, _ in edits) + "\n# end\n"
+    return (b"\xef\xbb\xbf" if bom else b"") + text.encode("utf-8")
+
+
+PS1_FIXTURE = voz_fixture(Z.PS1_EDITS, bom=True)
+LINUX_FIXTURE = voz_fixture(Z.LINUX_EDITS)
+
+
 def package(storage=STORAGE_REDS, extra=None, crlf=False, gate="mass-override-staging") -> bytes:
     """A Capri launcher package like the live ones (deterministic)."""
     text = storage.replace("\n", "\r\n") if crlf else storage
     files = {
         "archive/pc/mod/CapriPersonalityConstruct.archive": b"ARCHIVE" * 1000,
         "red4ext/plugins/CapriPersonalityConstruct/CapriPersonalityConstruct.dll": b"MZ" + b"\0" * 500,
-        "red4ext/plugins/CapriPersonalityConstruct/CapriVoz/CapriVoz.ps1": b"# voice\n",
+        "red4ext/plugins/CapriPersonalityConstruct/CapriVoz/CapriVoz.ps1": PS1_FIXTURE,
+        "red4ext/plugins/CapriPersonalityConstruct/CapriVoz/linux/capri_voz_linux.py": LINUX_FIXTURE,
+        "red4ext/plugins/CapriPersonalityConstruct/CapriVoz/voces/capri_english.safetensors": b"EN" * 300,
+        "red4ext/plugins/CapriPersonalityConstruct/CapriVoz/voces/capri_spanish.safetensors": b"ES" * 300,
         "bin/x64/plugins/cyber_engine_tweaks/mods/CapriVozReady/init.lua": b"-- heartbeat\n",
         "r6/scripts/CapriPersonalityConstruct/Capri.Storage.reds": text.encode("utf-8"),
         "r6/scripts/CapriPersonalityConstruct/Capri.System.reds": b"module Capri\npublic class CapriSystem {}\n",
+        "r6/scripts/CapriPersonalityConstruct/Capri.MassOverride.reds": b"module Capri\n// the caster's own cast\n",
         "r6/scripts/CapriPersonalityConstruct/Codeware/Codeware.reds": b"module Codeware\n",
         "r6/scripts/Open77/Open77MassOverride.reds": f"// gate https://{HOST}/{gate}/\n".encode(),
     }
@@ -140,6 +162,7 @@ server {{
     listen 443 ssl;
     server_name {HOST};
     ssl_certificate /etc/letsencrypt/live/{HOST}/fullchain.pem;
+    location /mass-override-staging/ {{ proxy_pass http://127.0.0.1:11900/; proxy_read_timeout 15s; proxy_buffering off; }}
     location /mass-override/ {{
         proxy_pass http://127.0.0.1:11901/;
     }}
@@ -184,6 +207,86 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif self.path == "/query/v1/status":
             body = json.dumps({"status": "online", "numplayers": len(self.machine.online.get(role, [])),
                                "name": role}).encode()
+        else:
+            self.send_error(404)
+            return
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+def wav(seconds=2.0, rate=24000) -> bytes:
+    out = io.BytesIO()
+    with wave.open(out, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(b"\x10\x20" * int(seconds * rate))
+    return out.getvalue()
+
+
+class VoiceHandler(http.server.BaseHTTPRequestHandler):
+    """Her voice service as the unit runs it: answers once systemctl started it."""
+    machine = None
+
+    def log_message(self, *a):
+        pass
+
+    def started(self):
+        return os.path.exists(os.path.join(self.machine.base, "voice-started"))
+
+    def do_GET(self):
+        if not self.started():
+            self.send_error(503)
+            return
+        if self.path.startswith("/health"):
+            body = json.dumps({"ok": True, "service": "capri-voice", "pocket_tts": "4.0.1", "spoken": 3, "errors": 0,
+                               "busy_refused": 0, "avg_gen_ms": 900, "uptime_s": 60,
+                               "languages": {"en": {"voice": "capri"}, "es": {"voice": "capri"}}}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        self.send_error(404)
+
+    def do_POST(self):
+        if not self.started() or not self.path.endswith("/audio/speech"):
+            self.send_error(404)
+            return
+        self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        body = wav()
+        self.send_response(200)
+        self.send_header("Content-Type", "audio/wav")
+        self.send_header("X-Capri-Voice", "capri")
+        self.send_header("X-Capri-Generated-Ms", "900")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+class GateHandler(http.server.BaseHTTPRequestHandler):
+    """A Mass Override gate: GET /casts only when its folder holds the dev-server.js that has it."""
+    machine = None
+    role = None
+
+    def log_message(self, *a):
+        pass
+
+    def do_GET(self):
+        folder = self.machine.gate_dir(self.role)
+        new = "GET /casts" in open(os.path.join(folder, "dev-server.js")).read()
+        if os.path.exists(os.path.join(self.machine.base, "gate-broken")) and self.path.startswith("/casts"):
+            self.send_error(500)
+            return
+        if self.path.startswith("/casts") and new:
+            body = b"0"
+        elif self.path.startswith("/feed"):
+            body = b"0 none"
+        elif self.path.startswith("/state"):
+            body = json.dumps({"polling": 2 if new else 0, "recent": []}).encode()
         else:
             self.send_error(404)
             return
@@ -246,12 +349,35 @@ class FakeMachine:
         open(os.path.join(self.base, "nginx.conf"), "w").write(main.replace("# configuration file /etc/nginx/nginx.conf:\n", ""))
         self.brain_ok = True
         open(os.path.join(self.base, "brain-ok"), "w").write("1")
+        # her voice (installed by the kit's voice step) and the Mass Override gates (older ones first)
+        self.voice_port = ports[0] + 60
+        self.gate_ports = {"staging": ports[0] + 61, "production": ports[0] + 62}
+        self.voice_root = os.path.join(self.base, "opt", "capri-voice")
+        self.unit_dir = os.path.join(self.base, "etc", "systemd")
+        os.makedirs(self.unit_dir)
+        for role in ("staging", "production"):
+            d = self.gate_dir(role)
+            os.makedirs(d)
+            open(os.path.join(d, "gate.js"), "w").write("// the gate as it was\n")
+            open(os.path.join(d, "dev-server.js"), "w").write("// GET /feed only\n")
         self._fake_commands()
         self.servers = []
         for port in self.by_port:
             srv = http.server.ThreadingHTTPServer(("127.0.0.1", port), type("H", (Handler,), {"machine": self}))
             threading.Thread(target=srv.serve_forever, daemon=True).start()
             self.servers.append(srv)
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", self.voice_port), type("V", (VoiceHandler,), {"machine": self}))
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.servers.append(srv)
+        for role, port in self.gate_ports.items():
+            srv = http.server.ThreadingHTTPServer(("127.0.0.1", port), type("G", (GateHandler,), {"machine": self,
+                                                                                                "role": role}))
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+            self.servers.append(srv)
+
+    def gate_dir(self, role):
+        return os.path.join(self.servers_root, {"staging": "open77-mass-override-staging",
+                                                "production": "open77-mass-override"}[role])
 
     def root(self, role):
         return os.path.join(self.servers_root, {"staging": "open77-xbuniverse-staging",
@@ -302,22 +428,52 @@ if sys.argv[1:] == ["-t"]:
     sys.exit(1 if bad else 0)
 sys.exit(0)
 ''')
-        _exe(os.path.join(self.bin, "curl"), f'''import json, sys
+        _exe(os.path.join(self.bin, "curl"), f'''import json, re, sys, urllib.request
 args = sys.argv[1:]
 url = args[-1]
 ok = open({os.path.join(b, 'brain-ok')!r}).read().strip() == "1"
-served = "location /{SECRET}/" in open({self.site!r}).read()
+site = open({self.site!r}).read()
+served = "location /{SECRET}/" in site
+def ask(local):
+    try:
+        with urllib.request.urlopen(local, timeout=5) as r:
+            return r.status, r.read().decode()
+    except Exception:
+        return 502, "bad gateway"
+m = re.match(r"^https://{HOST}(/capri-voice-[0-9a-f]+)/(.*)$", url)
+g = re.match(r"^https://{HOST}/(mass-override-staging|mass-override)/(.*)$", url)
 if "--resolve" in args and url == "https://{HOST}/{SECRET}/v1/models" and ok and served:
     print(json.dumps({{"object": "list", "data": [{{"id": "capri-brain"}}, {{"id": "qwen2.5:7b"}}]}}))
     print("200", end="")
+elif "--resolve" in args and m and ("location " + m.group(1) + "/ {{") in site:
+    st, body = ask("http://127.0.0.1:{self.voice_port}/" + m.group(2))
+    print(body)
+    print(st, end="")
+elif "--resolve" in args and g and ("location /" + g.group(1) + "/ {{") in site:
+    port = {{"mass-override-staging": {self.gate_ports["staging"]}, "mass-override": {self.gate_ports["production"]}}}[g.group(1)]
+    st, body = ask("http://127.0.0.1:%d/%s" % (port, g.group(2)))
+    print(body)
+    print(st, end="")
 else:
     print("not found")
     print("404", end="")
 ''')
-        _exe(os.path.join(self.bin, "systemctl"), '''import sys
+        _exe(os.path.join(self.bin, "systemctl"), f'''import os, sys
 a = sys.argv[1:]
+started = {os.path.join(b, "voice-started")!r}
+if a[:2] == ["restart", "capri-voice"]:
+    unit = open(os.path.join({self.unit_dir!r}, "capri-voice.service")).read()
+    # a container that refuses mount namespaces: the sandboxed unit fails (226/NAMESPACE)
+    if os.path.exists({os.path.join(b, "no-namespaces")!r}) and "ProtectSystem=strict" in unit:
+        if os.path.exists(started):
+            os.remove(started)
+    else:
+        open(started, "w").write("1")
 if a and a[0] == "is-active":
-    print("active")
+    if a[1:] and a[1].startswith("capri-voice"):
+        print("active" if os.path.exists(started) else "failed")
+    else:
+        print("active")
 elif a and a[0] == "show":
     props = [p for i, p in enumerate(a) if a[i - 1] == "-p"]
     if "--value" in a:
@@ -332,6 +488,54 @@ elif a and a[0] == "show":
                 print(p + "=")
 sys.exit(0)
 ''')
+        _exe(os.path.join(self.bin, "id"), f'''import os, sys
+sys.exit(0 if os.path.exists({os.path.join(b, "user-made")!r}) else 1)
+''')
+        _exe(os.path.join(self.bin, "useradd"), f'''open({os.path.join(b, "user-made")!r}, "w").write(" ".join(__import__("sys").argv))
+''')
+        _exe(os.path.join(self.bin, "chown"), "import sys\nsys.exit(0)\n")
+        # the Python her venv is made with: venv, pip, the version question and the self-test, as they answer
+        _exe(os.path.join(self.bin, "fakepython"), '''import json, os, shutil, sys
+a = sys.argv[1:]
+here = os.path.abspath(__file__)
+venv = os.path.dirname(os.path.dirname(here))
+marker = os.path.join(venv, "installed.json")
+if a[:2] == ["-m", "venv"]:
+    os.makedirs(os.path.join(a[2], "bin"))
+    shutil.copy(here, os.path.join(a[2], "bin", "python"))
+    os.chmod(os.path.join(a[2], "bin", "python"), 0o755)
+    sys.exit(0)
+if a[:3] == ["-m", "pip", "install"]:
+    d = json.load(open(marker)) if os.path.exists(marker) else {}
+    for x in a:
+        if x.startswith("torch=="):
+            d["torch"] = x.split("==")[1] + "+cpu"
+        if x.startswith("pocket-tts=="):
+            d["pocket-tts"] = x.split("==")[1]
+            d["numpy"] = "2.5.4"
+    json.dump(d, open(marker, "w"))
+    open(os.path.join(os.path.dirname(venv), "pip-calls"), "a").write(" ".join(a) + "\\n")
+    sys.exit(0)
+if a and a[0] == "-c":
+    d = json.load(open(marker)) if os.path.exists(marker) else {}
+    for p in ("pocket-tts", "torch", "numpy"):
+        print(p, d.get(p, "-"))
+    sys.exit(0)
+if any(x.endswith("capri_voice_server.py") for x in a) and "--selftest" in a:
+    voices = a[a.index("--voices") + 1]
+    langs = {"english": "en", "spanish": "es"}
+    out = {"ok": True, "pocket_tts": "4.0.1", "torch": "2.15.0+cpu", "languages": {}}
+    for f in sorted(os.listdir(voices)):
+        n = f[len("capri_"):-len(".safetensors")]
+        out["languages"][langs.get(n, n)] = {"voice": "capri", "seconds": 3.1, "gen_s": 1.2, "load_s": 4.0, "rms": 900,
+                                             "ok": True}
+    if os.path.exists(os.path.join(os.path.dirname(venv), "selftest-fails")):
+        out["ok"] = False
+        out["languages"]["en"].update(ok=False, why="not her own voice (eve)")
+    print(json.dumps(out))
+    sys.exit(0 if out["ok"] else 1)
+sys.exit(1)
+''')
         _exe(os.path.join(self.bin, "ss"), 'print("LISTEN 0 511 127.0.0.1:8890 0.0.0.0:* users:((\\"node\\",pid=1,fd=20))")\n')
         _exe(os.path.join(self.bin, "journalctl"), f'print("2026-11-12T04:30:00 node[1]: [capri-brain] chat messages=8/21 chars=6000 max_tokens=260 status=200 ms=33000")\nprint("2026-11-12T04:30:01 node[1]: path /{SECRET}/ from 203.0.113.7")\n')
         _exe(os.path.join(self.bin, "ollama"), '''import sys
@@ -345,7 +549,11 @@ elif sys.argv[1:] == ["ps"]:
 
     def env(self):
         e = dict(os.environ)
-        e.update(SERVERS_ROOT=self.servers_root, CAPRI_KIT_STATE=self.state, PATH=self.bin + os.pathsep + e["PATH"])
+        e.update(SERVERS_ROOT=self.servers_root, CAPRI_KIT_STATE=self.state, PATH=self.bin + os.pathsep + e["PATH"],
+                 CAPRI_VOICE_ROOT=self.voice_root, CAPRI_VOICE_PORT=str(self.voice_port),
+                 CAPRI_VOICE_UNIT_DIR=self.unit_dir, CAPRI_VOICE_PYTHON=os.path.join(self.bin, "fakepython"),
+                 CAPRI_GATE_PORT_STAGING=str(self.gate_ports["staging"]),
+                 CAPRI_GATE_PORT_PRODUCTION=str(self.gate_ports["production"]))
         return e
 
     def close(self):
