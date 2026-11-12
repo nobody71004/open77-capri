@@ -73,6 +73,12 @@ so there is no F1 chat/settings window on a player install.
 
 ## 4. Choose her brain (admin machine)
 
+On a server whose package was built with the server-brain kit
+([kit/README.md](../kit/README.md)), players need nothing: `Capri.ServerBrain.reds`
+points her at the brain on the server's machine when the game starts, unless the
+player has a service of their own with its own key. The rest of this section is
+for admin machines and other servers.
+
 The player package has no CET Connection tab. Configure the provider on the
 admin machine through the `CapriMcpBridge` command file (or the separately
 installed official CET window), then distribute the resulting

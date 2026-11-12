@@ -1,0 +1,29 @@
+@echo off
+setlocal EnableExtensions
+title This PC's Capri, READ ONLY
+rem ---------------------------------------------------------------------------------------------
+rem   READ ONLY, no server: this PC's Capri -- the files the launcher put in (is the brain wiring
+rem   there?), what her settings think with (never a key), what the wiring decided at her last
+rem   start (r6\storages\CapriConstruct\server_brain.json), and her last requests to the brain in
+rem   RedHttpClient's log.  Run it after a game with her.
+rem   Log: kit\capri-player-*.log here.
+rem ---------------------------------------------------------------------------------------------
+set "PY=%LOCALAPPDATA%\Programs\fivem2open77\runtime\python\python.exe"
+if not exist "%PY%" goto nopython
+set "CK=%~dp0kit\capri_kit.py"
+if not exist "%CK%" goto nokit
+"%PY%" -X utf8 "%CK%" player
+echo.
+echo Done.  Tell Claude "done": it reads the log.
+pause
+exit /b 0
+
+:nopython
+echo FAILED: fivem2open77 Studio's Python is not at %PY% - is the Studio installed?
+pause
+exit /b 1
+
+:nokit
+echo FAILED: this folder's own kit (kit\capri_kit.py) is missing: unpack the whole folder again.
+pause
+exit /b 1

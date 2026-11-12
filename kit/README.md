@@ -1,0 +1,30 @@
+# The server-brain kit
+
+Capri's launcher package (`requiredMods`) cannot carry `r6/storages/CapriConstruct/settings.json`: the
+launcher refuses player storage. So a player's Capri starts on her default provider, Player2, and without
+the Player2 app she greets with *"I'm here, V, but disconnected"*, even when the game server's machine runs
+a brain for her.
+
+This kit adds one script to a server's Capri package, `r6/scripts/CapriPersonalityConstruct/Capri.ServerBrain.reds`
+([template](template/Capri.ServerBrain.reds)). When Capri reads her settings at game start, it points her
+`local` provider at the brain nginx serves on the server's machine (`https://HOST/capri-brain-…/v1`, model
+`capri-brain`), unless the player has a service of their own with its own key. Its decision is written to
+`r6/storages/CapriConstruct/server_brain.json` on the player's PC, without any address or key.
+
+| File | What it does |
+| --- | --- |
+| `capri_kit.py` | Runs on the owner's PC (the fivem2open77 Studio's Python and SSH settings, through `av_kit.py`): `check`, `publish --role staging\|production`, `verify`, `putback`, `player`. |
+| `capri_wire.py` | The build: the live package plus the script, reproducible, checked against Capri's own `Capri.Storage.reds`. Hook `patch` (one call where `LoadSettings` returns) is the one REDscript 1.0 compiles; `wrap` (`@wrapMethod(CapriStorage) LoadSettings`) is refused by REDscript 1.0 preview.22 for a scripted class's method and only tried second. It also ships the 12 Capri scripts REDscript 1.0 migrates at every start, as this PC's game migrated them, when they differ from the package's by nothing but those edits (`is_migration_of`, whose counts match the game's own log). |
+| `capri_scc.py` | The game's own Redscript compiler (`engine/tools/scc_lib.dll`) on a sandbox: the game's pristine bundle, this PC's scripts with the package's Capri, and copies of the scripts the game's RED4ext plugins add (from the game's own last compile log). The live package (migrated) must compile first, then the new one, both with nothing to migrate; a window the compiler opens is closed with Cancel at once. |
+| `remote/capri_server.py` | On the game servers' machine: `look` (read only), `fetch`, `import` (the hosted store and `server.jsonc`, compare-and-swap on the live sha256, refused with players on, `--check-config`, a record for the put-back), `verify`, `putback`, `guard` (per-address `limit_req`/`limit_conn` on the brain's nginx location: kept first, `nginx -t`, reload, the brain asked again, put back on any failure; refused when the brain's requests all come from loopback or private addresses), `guard-putback`. |
+| `bats/*.bat.in` | The owner's bats; `@@HOST@@` becomes the HOST line of their own kits when the kit is delivered. |
+| `tests/` | `python3 kit/tests/test_kit.py`: the build, the migration check, the machine's side against a fake machine (two server folders, stand-ins for nginx, curl and systemctl, each server's manifest port), the kit's flow, the bats. `rehearse_publish.py`: `publish` on the owner's PC with everything real (the game's compiler, the brain over HTTPS) but the machine, which a folder stands in for. |
+
+The brain's address is a capability: none of these files contains it, and no log line prints its path
+(`capri-brain-<secret>`). It does travel inside the package to every player who joins, which is why `guard`
+limits how often one address may ask the brain; `check` reports whether it does.
+
+Checked on the real compiler (REDscript 1.0.0-preview.22, the owner's PC, 2026-11-12): the live 1.16.15 Capri
+scripts as packaged give 1554 errors and a migration request; migrated, 107 files compile with 603 warnings and
+0 errors; with `Capri.ServerBrain.reds` and the patch, 108 files, 603 warnings, 0 errors; the wrap gives
+"could not find a method with a matching signature".

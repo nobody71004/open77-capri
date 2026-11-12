@@ -1,0 +1,61 @@
+@echo off
+setlocal EnableExtensions
+title Put live XyberRP's Capri back
+rem ---------------------------------------------------------------------------------------------
+rem   live XyberRP's Capri entry back to the build it named before this kit's last change (that build is
+rem   still in its mod store), the server's own config check, and a restart.  Refused while anybody
+rem   is on it.  The brain, nginx and everything else stay as they are.
+rem   Logs: kit\capri-putback-*.log here, and ..\open77-av-kit\avkit-restart-*.log.
+rem ---------------------------------------------------------------------------------------------
+set "PY=%LOCALAPPDATA%\Programs\fivem2open77\runtime\python\python.exe"
+if not exist "%PY%" goto nopython
+set "CK=%~dp0kit\capri_kit.py"
+if not exist "%CK%" goto nokit
+set "AVK="
+if exist "%~dp0..\open77-av-kit\av_kit.py" set "AVK=%~dp0..\open77-av-kit"
+if not defined AVK if exist "%USERPROFILE%\Downloads\open77-av-kit\av_kit.py" set "AVK=%USERPROFILE%\Downloads\open77-av-kit"
+if not defined AVK goto noavkit
+set "AV=%AVK%\av_kit.py"
+set "O77_AV_KIT=%AVK%"
+@@HOST@@
+
+echo.
+choice /C YN /M "Put live XyberRP's Capri back to the build before"
+if errorlevel 2 goto declined
+"%PY%" -X utf8 "%CK%" putback --role production %HOST%
+set "RC=%ERRORLEVEL%"
+if not "%RC%"=="0" goto notdone
+"%PY%" -X utf8 "%AV%" restart --on open77-xbuniverse --production %HOST%
+set "RS=%ERRORLEVEL%"
+echo.
+echo Done (put back: exit %RC%, restart: exit %RS%).  Tell Claude "done".
+pause
+exit /b %RS%
+
+:declined
+echo Nothing done, nothing changed.
+pause
+exit /b 0
+
+:notdone
+echo.
+echo NOT put back (exit %RC%): see the lines above (exit 3: somebody is on XyberRP, or this kit did
+echo not make the build it names now).  Tell Claude "done".
+pause
+exit /b %RC%
+
+:nopython
+echo FAILED: fivem2open77 Studio's Python is not at %PY% - is the Studio installed?
+pause
+exit /b 1
+
+:nokit
+echo FAILED: this folder's own kit (kit\capri_kit.py) is missing: unpack the whole folder again.
+pause
+exit /b 1
+
+:noavkit
+echo FAILED: the AV kit's av_kit.py was not found: not in %~dp0..\open77-av-kit, not in
+echo %USERPROFILE%\Downloads\open77-av-kit.  It signs in to the machine the way the Studio does.
+pause
+exit /b 1
