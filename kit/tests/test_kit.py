@@ -15,6 +15,7 @@ import sys
 import tempfile
 import time
 import traceback
+import urllib.request
 import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -719,6 +720,276 @@ def test_bats():
               text.count("--role staging" if role == "production" else "--role production") == 0)
 
 
+
+# ------------------------------------------------------------------------------------------------ the brain's program
+BRAIN_OLD = os.path.join(HERE, "fixtures", "capri-brain-982374d.mjs")
+BRAIN_NEW = os.path.join(KIT, "remote", "brain", "capri-brain.mjs")
+
+BRAIN_SYSTEMCTL = r"""import json, os, signal, subprocess, sys, time
+a = sys.argv[1:]
+b = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if a[:1] == ["restart"] and a[1:2] and a[1].replace(".service", "") == "capri-brain":
+    cmd = json.load(open(os.path.join(b, "brain.cmd")))
+    try:
+        pid = int(open(os.path.join(b, "brain.pid")).read())
+        os.kill(pid, signal.SIGTERM)
+        for _ in range(50):
+            os.kill(pid, 0)
+            time.sleep(0.1)
+    except (OSError, ValueError):
+        pass
+    with open(os.path.join(b, "brain.log"), "a") as log:
+        p = subprocess.Popen(cmd["argv"], cwd=cmd["cwd"], env={**os.environ, **cmd["env"]}, stdout=log, stderr=log,
+                             start_new_session=True)
+    open(os.path.join(b, "brain.pid"), "w").write(str(p.pid))
+    open(os.path.join(b, "brain-restarts"), "a").write("1")
+    sys.exit(0)
+os.execv(sys.executable, [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "systemctl-base")] + a)
+"""
+
+BRAIN_SS = r"""import os, sys
+b = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+port = open(os.path.join(b, "brain.port")).read().strip()
+try:
+    pid = open(os.path.join(b, "brain.pid")).read().strip()
+except OSError:
+    pid = ""
+if pid and any(":" + port in x for x in sys.argv):
+    print('LISTEN 0 511 127.0.0.1:%s 0.0.0.0:* users:(("node",pid=%s,fd=20))' % (port, pid))
+"""
+
+BRAIN_JOURNAL = r"""import os, sys
+b = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+a = sys.argv[1:]
+if "-u" in a and a[a.index("-u") + 1].startswith("capri-brain"):
+    try:
+        for l in open(os.path.join(b, "brain.log")).read().splitlines()[-40:]:
+            print("2026-11-12T08:50:00 node[1]: " + l)
+    except OSError:
+        pass
+elif "-u" in a and "mass-override" in a[a.index("-u") + 1]:
+    print('2026-11-12T08:28:38 node[2]: [cast] seq=2 by s440614316916 mode=blink at -729.1,1187.2,28.0 token=s440614316916-1 targets=135 (2 client(s) polling)')
+"""
+
+
+def free_port():
+    import socket  # noqa: PLC0415
+    with socket.socket() as so:
+        so.bind(("127.0.0.1", 0))
+        return so.getsockname()[1]
+
+
+def brain_machine(program):
+    """A fake machine whose brain is a REAL capri-brain.mjs (PROGRAM) run by node behind the nginx location, restarted
+    by its systemctl stand-in the way systemd would."""
+    m = fakes.FakeMachine()
+    port = free_port()
+    site = open(m.site_real).read().replace("proxy_pass http://127.0.0.1:8890/;", f"proxy_pass http://127.0.0.1:{port}/;")
+    open(m.site_real, "w").write(site)
+    d = os.path.join(m.base, "opt", "capri-brain", "client", "mcp")
+    os.makedirs(d)
+    shutil.copy(program, os.path.join(d, "capri-brain.mjs"))
+    os.chmod(os.path.join(d, "capri-brain.mjs"), 0o640)
+    open(os.path.join(m.base, "brain.port"), "w").write(str(port))
+    json.dump({"argv": [shutil.which("node"), "client/mcp/capri-brain.mjs"], "cwd": os.path.join(m.base, "opt", "capri-brain"),
+               "env": {"CAPRI_BRAIN_PORT": str(port), "CAPRI_BRAIN_BACKEND": "openai",
+                       "CAPRI_BRAIN_BACKEND_URL": f"http://127.0.0.1:{free_port()}/v1"}},
+              open(os.path.join(m.base, "brain.cmd"), "w"))
+    os.rename(os.path.join(m.bin, "systemctl"), os.path.join(m.bin, "systemctl-base"))
+    fakes._exe(os.path.join(m.bin, "systemctl"), BRAIN_SYSTEMCTL)
+    fakes._exe(os.path.join(m.bin, "ss"), BRAIN_SS)
+    fakes._exe(os.path.join(m.bin, "journalctl"), BRAIN_JOURNAL)
+    subprocess.run([os.path.join(m.bin, "systemctl"), "restart", "capri-brain"], check=True, env=m.env())
+    for _ in range(100):
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=1):
+                break
+        except OSError:
+            time.sleep(0.1)
+    m.brain_port, m.brain_file = port, os.path.join(d, "capri-brain.mjs")
+    # the unit the brain runs in: systemd's cgroup names it on the machine; here nothing does
+    base_env = m.env
+    m.env = lambda: {**base_env(), "CAPRI_BRAIN_UNIT": "capri-brain"}
+    return m
+
+
+def brain_stop(m):
+    try:
+        os.kill(int(open(os.path.join(m.base, "brain.pid")).read()), 15)
+    except (OSError, ValueError):
+        pass
+
+
+def brain_work(m, program=BRAIN_NEW):
+    work = tempfile.mkdtemp(dir=m.base)
+    shutil.copy(program, os.path.join(work, "capri-brain.mjs"))
+    return work
+
+
+def brain_says(m, said):
+    body = json.dumps({"model": "capri-brain", "messages": [
+        {"role": "system", "content": 'x {"do":"mass_override","target":...} y'}, {"role": "user", "content": said}]}).encode()
+    req = urllib.request.Request(f"http://127.0.0.1:{m.brain_port}/v1/chat/completions", data=body, method="POST",
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.loads(json.loads(r.read())["choices"][0]["message"]["content"])
+    except Exception as e:  # noqa: BLE001
+        return {"error": str(e)}
+
+
+def remote_env(machine, *args, work=None, env=None):
+    work = work or tempfile.mkdtemp(dir=machine.base)
+    p = subprocess.run([sys.executable, REMOTE, args[0], work] + list(args[1:]), capture_output=True, text=True,
+                       env={**machine.env(), **(env or {})}, timeout=180)
+    out = p.stdout + p.stderr
+    res = {}
+    for line in out.splitlines():
+        if line.startswith("CAPRI-RESULT "):
+            res = json.loads(line[len("CAPRI-RESULT "):])
+    return p.returncode, out, res, work
+
+
+def test_brain_remote():
+    """The brain's program updated on the machine: a REAL capri-brain.mjs run by node, as the kit finds it (nginx's
+    location -> the port -> its process -> its file), kept first, replaced, checked by node, restarted, asked; again:
+    nothing to do; a program it does not know: refused; a new one that does not start: put back."""
+    if not shutil.which("node"):
+        check("brain: node is here to run the brain (skipped)", True)
+        return
+    import hashlib as _h  # noqa: PLC0415
+    check("brain: the kit carries the repository's capri-brain.mjs", open(BRAIN_NEW, "rb").read() ==
+          open(os.path.join(os.path.dirname(KIT), "client", "mcp", "capri-brain.mjs"), "rb").read())
+    m = brain_machine(BRAIN_OLD)
+    env = {}
+    try:
+        before = brain_says(m, "mass over ride")
+        check("brain (old): 'mass over ride' is not a cast -- the bug", "mass_override" not in json.dumps(before), before)
+        code, out, res, work = remote_env(m, "brain", work=brain_work(m), env=env)
+        check("brain: exit 0, replaced whole (the kit's earlier build)", code == 0 and res.get("changed") and
+              "replaced whole: it was this kit's earlier build 982374d" in out, out[-1500:])
+        check("brain: the file is the kit's now", open(m.brain_file, "rb").read() == open(BRAIN_NEW, "rb").read())
+        check("brain: its mode and owner kept", (os.stat(m.brain_file).st_mode & 0o777) == 0o640)
+        kept = res.get("kept") or ""
+        check("brain: the old one kept, 0600", os.path.isfile(kept) and open(kept, "rb").read() == open(BRAIN_OLD, "rb").read()
+              and (os.stat(kept).st_mode & 0o777) == 0o600, kept)
+        check("brain: node checked it, restarted, the new build runs", "node --check: the new program is accepted" in out and
+              "capri-brain restarted: up again" in out and "build 2026-11-12.1" in out, out[-1500:])
+        check("brain: asked here, both ways V types it come back as a cast",
+              re.search(r"'mass over ride' -> 200 in [\d.]+ s: actions \['mass_override'\]", out) and
+              re.search(r"'MASS OVERRIDE' -> 200 in [\d.]+ s: actions \['mass_override'\]", out), out[-1200:])
+        check("brain: its last requests and the gates' casts shown (read only)", "its last requests" in out and
+              "[cast] seq=2 by s440614316916" in out, out[:2500])
+        check("brain: the network facts shown (read only)", "what on this machine could drop a player's connection" in out)
+        no_secrets("brain", out)
+        check("brain: the key in its unit's settings never printed", "supersecretvalue" not in out)
+        after = brain_says(m, "mass over ride")
+        check("brain (new): 'mass over ride' is a cast, live", [x.get("do") for x in after.get("actions") or []] ==
+              ["mass_override"], after)
+        check("brain: brain.url for the kit, 0600", (os.stat(os.path.join(work, "brain.url")).st_mode & 0o777) == 0o600)
+        restarts = open(os.path.join(m.base, "brain-restarts")).read()
+        code, out, res, work = remote_env(m, "brain", work=brain_work(m), env=env)
+        check("brain again: nothing to do (3), not restarted", code == 3 and res.get("why") == "already" and
+              open(os.path.join(m.base, "brain-restarts")).read() == restarts, out[-800:])
+        # a new program that node accepts but that does not start: put back, the old one answers again
+        broken = os.path.join(m.base, "broken-brain.mjs")
+        open(broken, "w").write(open(BRAIN_NEW).read().replace("const BRAIN_BUILD = '2026-11-12.1",
+                                                                 "const BRAIN_BUILD = '2026-11-12.9") +
+                                "\nthrow new Error('this build does not start');\n")
+        code, out, res, work = remote_env(m, "brain", work=brain_work(m, broken), env=env)
+        check("brain that does not start: exit 1, PUT BACK, the one before answers", code == 1 and "PUT BACK" in out and
+              open(m.brain_file, "rb").read() == open(BRAIN_NEW, "rb").read() and
+              [x.get("do") for x in brain_says(m, "mass over ride").get("actions") or []] == ["mass_override"], out[-1200:])
+        # a syntax error: refused before anything changes
+        bad = os.path.join(m.base, "bad-brain.mjs")
+        open(bad, "w").write(open(BRAIN_NEW).read().replace("const BRAIN_BUILD = '2026-11-12.1",
+                                                             "const BRAIN_BUILD = '2026-11-12.8") + "\nfunction (\n")
+        r0 = open(os.path.join(m.base, "brain-restarts")).read()
+        code, out, res, work = remote_env(m, "brain", work=brain_work(m, bad), env=env)
+        check("brain with a syntax error: refused by node, nothing changed, not restarted", code == 1 and
+              "node does not accept the new program: nothing changed" in out and
+              open(m.brain_file, "rb").read() == open(BRAIN_NEW, "rb").read() and
+              open(os.path.join(m.base, "brain-restarts")).read() == r0, out[-600:])
+        check("brain: no new file left next to it", not [n for n in os.listdir(os.path.dirname(m.brain_file))
+                                                          if n.startswith(".capri-kit-new")])
+    finally:
+        brain_stop(m)
+        m.close()
+    # a brain this kit does not know, with the old Mass Override line: only that line changes
+    edited = os.path.join(tempfile.mkdtemp(), "capri-brain.mjs")
+    open(edited, "w").write(open(BRAIN_OLD).read().replace("'qwen2.5:1.5b'", "'llama3.2:3b'"))
+    m = brain_machine(edited)
+    try:
+        code, out, res, work = remote_env(m, "brain", work=brain_work(m), env=env)
+        now = open(m.brain_file).read()
+        check("brain (edited by hand): only its Mass Override recognizer replaced", code == 0 and
+              "its Mass Override recognizer replaced, the rest of it as it was" in out and "'llama3.2:3b'" in now and
+              "MASS_OVERRIDE_WORDS" in now and "BRAIN_BUILD" not in now, out[-1200:])
+        check("brain (edited by hand): 'mass over ride' is a cast now",
+              [x.get("do") for x in brain_says(m, "mass over ride").get("actions") or []] == ["mass_override"])
+    finally:
+        brain_stop(m)
+        m.close()
+    # a brain with no Mass Override line at all: refused, untouched
+    unknown = os.path.join(tempfile.mkdtemp(), "capri-brain.mjs")
+    open(unknown, "w").write(open(BRAIN_OLD).read().replace("const MASS_OVERRIDE_REQUEST =", "const MO_RX ="))
+    m = brain_machine(unknown)
+    try:
+        code, out, res, work = remote_env(m, "brain", work=brain_work(m), env=env)
+        check("brain this kit does not know: refused, untouched", code == 1 and "is not a brain this kit knows" in out and
+              open(m.brain_file).read() == open(unknown).read(), out[-600:])
+    finally:
+        brain_stop(m)
+        m.close()
+
+
+
+def test_kit_brain():
+    """capri_kit.py brain: the machine's side for real (node runs the brain), then the PC's check -- the real
+    ask_brain_mo, against the brain itself (no TLS here: plain HTTP to its port)."""
+    if not shutil.which("node"):
+        check("kit brain: node is here to run the brain (skipped)", True)
+        return
+    import capri_kit as ck
+    m = brain_machine(BRAIN_OLD)
+    kitdir = tempfile.mkdtemp()
+    orig = (ck.HERE, ck.Machine, ck.ask_brain_mo)
+    try:
+        logs = []
+        log = lambda t, quiet=False: logs.append(ck.clean(t))  # noqa: E731
+        local = f"http://127.0.0.1:{m.brain_port}/v1"
+        check("kit brain: the PC's check finds the old brain does NOT cast for 'mass over ride'",
+              not orig[2](local, log) and any("does not answer 'mass over ride'" in l or "NOT a cast" in l for l in logs),
+              logs[-4:])
+        ck.HERE = kitdir
+        calls = []
+        install_fake_machine(ck, m, calls)
+        asked = []
+
+        def ask(url, log):
+            asked.append(url)
+            return orig[2](local, log)
+        ck.ask_brain_mo = ask
+
+        class A:
+            role = ""; host = "root@example.invalid"; key_from = "xyberrp-staging"
+        logs.clear()
+        rc = ck.cmd_brain(A, log)
+        check("kit brain: exit 0, the machine's brain updated, then asked with the players' address",
+              rc == 0 and asked == [fakes.URL] and calls == ["brain"], (rc, asked, calls, "\n".join(logs[-14:])))
+        check("kit brain: from this PC both ways V types it come back as a cast",
+              sum(1 for l in logs if re.search(r"from this PC, V types '(mass over ride|MASS OVERRIDE)': answered in [\d.]+ s, "
+                                              r"actions \['mass_override'\]", l)) == 2, "\n".join(logs[-6:]))
+        check("kit brain: brain.url not left here", not any(f.endswith(".url") for _, _, fs in os.walk(kitdir) for f in fs))
+        check("kit brain: no brain path in the log", not any(fakes.SECRET in l for l in logs))
+        rc = ck.cmd_brain(A, log)
+        check("kit brain again: 0 (nothing to do), asked again", rc == 0 and len(asked) == 2, "\n".join(logs[-6:]))
+    finally:
+        ck.HERE, ck.Machine, ck.ask_brain_mo = orig
+        brain_stop(m)
+        m.close()
+
+
 def test_one_line_site():
     """XyberRP's own site file writes its locations on one line each ("location /x/ { proxy_pass ...; }"): the brain's
     limits go into that line (2026-11-12: the first guard found the brain's location "0 times" there), and her voice's
@@ -824,9 +1095,264 @@ def test_mo():
                   open(os.path.join(KIT, "remote", "gate", n), "rb").read())
 
 
+
+# ------------------------------------------------------------------------------------------------ two bats at once
+def remote_bg(machine, *args, work=None, extra_env=None):
+    """remote/capri_server.py ARGS started in the background (a second bat's step): (Popen, work)."""
+    work = work or tempfile.mkdtemp(dir=machine.base)
+    env = machine.env()
+    env.update(extra_env or {})
+    p = subprocess.Popen([sys.executable, REMOTE, args[0], work] + list(args[1:]), stdout=subprocess.PIPE,
+                         stderr=subprocess.STDOUT, text=True, env=env)
+    return p, work
+
+
+def finished(p, timeout=120):
+    out, _ = p.communicate(timeout=timeout)
+    res = {}
+    for line in out.splitlines():
+        if line.startswith("CAPRI-RESULT "):
+            res = json.loads(line[len("CAPRI-RESULT "):])
+    return p.returncode, out, res
+
+
+def test_machine_lock():
+    """C2 and C3 run at once (2026-11-12: both downloaded the same file on the machine at the same moment, and one
+    unpacked what the other was rewriting): every command that changes the machine takes its turn."""
+    import fcntl  # noqa: PLC0415
+    m = fakes.FakeMachine()
+    try:
+        os.makedirs(m.state, exist_ok=True)
+        lock = open(os.path.join(m.state, "kit.lock"), "a+")
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock.write(json.dumps({"pid": 4242, "command": "voice", "role": "production", "since": "2026-11-12 08:13:40"}))
+        lock.flush()
+        site = open(m.site_real).read()
+        t0 = time.time()
+        p, _ = remote_bg(m, "guard", extra_env={"CAPRI_KIT_LOCK_WAIT": "3"})
+        code, out, res = finished(p)
+        took = time.time() - t0
+        check("lock held: guard gives up after its wait, nothing done", code == 1 and 2.5 <= took < 20 and
+              "another run of this kit is still changing this machine (voice for production, pid 4242, since "
+              "2026-11-12 08:13:40 UTC)" in out and "nothing done here" in out and open(m.site_real).read() == site,
+              f"{code} {took:.1f}s {out[-500:]}")
+        check("lock held: it said what it waits for", "another run of this kit is changing this machine (voice for "
+              "production, pid 4242" in out and "waiting for it" in out, out[-500:])
+        no_secrets("lock held", out)
+        t0 = time.time()
+        code, out, res, _ = remote(m, "look")
+        check("lock held: look (read only) does not wait", code == 0 and time.time() - t0 < 30 and
+              "waiting" not in out, out[-300:])
+        # the holder ends while a second run waits: it goes on by itself
+        p, _ = remote_bg(m, "guard", extra_env={"CAPRI_KIT_LOCK_WAIT": "60"})
+        time.sleep(3)
+        check("lock held: the second run is still waiting", p.poll() is None)
+        fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+        lock.close()
+        code, out, res = finished(p)
+        check("lock let go: the waiting guard goes on and is done", code == 0 and
+              re.search(r"the other run is done \(waited [2-9]\d* s\): this one goes on", out) and
+              "limit_req zone=capri_brain" in open(m.site_real).read(), out[-800:])
+        check("lock let go: the lock names nobody after", open(os.path.join(m.state, "kit.lock")).read() == "")
+        # a holder that dies (a dropped SSH session) leaves nothing locked
+        holder = subprocess.Popen([sys.executable, "-c", "import fcntl, sys, time\nf = open(sys.argv[1], 'a+')\n"
+                                   "fcntl.flock(f.fileno(), fcntl.LOCK_EX)\nprint('held', flush=True)\ntime.sleep(60)",
+                                   os.path.join(m.state, "kit.lock")], stdout=subprocess.PIPE, text=True)
+        holder.stdout.readline()
+        p, _ = remote_bg(m, "guard", extra_env={"CAPRI_KIT_LOCK_WAIT": "60"})
+        time.sleep(2)
+        holder.kill()
+        holder.wait()
+        code, out, res = finished(p)
+        check("a holder killed: the waiting run goes on", code in (0, 3) and "this one goes on" in out, out[-500:])
+    finally:
+        m.close()
+
+    # the real case: C2's and C3's first steps (her voice) at the same moment, on a fresh machine
+    m = fakes.FakeMachine()
+    try:
+        works = [voice_work(m), voice_work(m)]
+        procs = [remote_bg(m, "voice", "--role", role, work=w)[0] for role, w in zip(("staging", "production"), works)]
+        outs = [finished(p, timeout=300) for p in procs]
+        codes = sorted(o[0] for o in outs)
+        check("voice from two bats at once: one installs, the other waits and finds it there", codes == [0, 3],
+              [(o[0], o[1][-400:]) for o in outs])
+        waited = [o for o in outs if o[0] == 3]
+        check("voice from two bats at once: the second said it waited", waited and "waiting for it" in waited[0][1]
+              and "this one goes on" in waited[0][1] and waited[0][2].get("why") == "already",
+              waited[0][1][-600:] if waited else outs)
+        pip = open(os.path.join(m.voice_root, "pip-calls")).read()
+        check("voice from two bats at once: pip ran for one of them only", pip.count("torch==") == 1, pip)
+        for o in outs:
+            no_secrets("voice at once", o[1])
+        check("voice from two bats at once: both have her voice's address", all(
+            os.path.isfile(os.path.join(w, "voice.url")) for w in works))
+    finally:
+        m.close()
+
+
+def standalone_archive(version="3.11.18", extra=()):
+    """A stand-in for python-build-standalone's install_only archive: python/bin/python3 says VERSION (it answers
+    every question with it, as the kit only asks it for its version)."""
+    import tarfile  # noqa: PLC0415
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as t:
+        def add(name, data, mode=0o644):
+            i = tarfile.TarInfo(name)
+            i.size, i.mode, i.mtime = len(data), mode, 1794000000
+            t.addfile(i, io.BytesIO(data))
+        d = tarfile.TarInfo("python/bin")
+        d.type, d.mode = tarfile.DIRTYPE, 0o755
+        t.addfile(d)
+        add("python/bin/python3", f"#!/bin/sh\necho {version}\n".encode(), 0o755)
+        for n in range(200):
+            add(f"python/lib/python3.11/m{n}.py", os.urandom(3000).hex().encode())
+        for name, data in extra:
+            add(name, data)
+    return buf.getvalue()
+
+
+class Served:
+    """One file over HTTP on 127.0.0.1 (the standalone Python's download, stood in for); "cut" sends a
+    Content-Length it does not keep."""
+
+    def __init__(self, data, cut=False):
+        import http.server  # noqa: PLC0415
+        import threading  # noqa: PLC0415
+        served = self
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                served.gets += 1
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(served.data)))
+                self.end_headers()
+                self.wfile.write(served.data[: len(served.data) // 2] if served.cut else served.data)
+                self.wfile.flush()
+                if served.cut:
+                    self.close_connection = True
+
+            def log_message(self, *a):
+                pass
+
+        self.data, self.cut, self.gets = data, cut, 0
+        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}/cpython.tar.gz"
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
+def fetch(root, url, sha, timeout=120):
+    """remote/capri_server.py's fetch_standalone, the way cmd_voice calls it, in a process of its own."""
+    code = ("import os, sys\nsys.path.insert(0, sys.argv[1])\nimport capri_server as S\n"
+            "py = os.path.join(S.VOICE_ROOT, 'python', 'bin', 'python3')\n"
+            "try:\n    print('GOT', *S.fetch_standalone(py), flush=True)\n"
+            "except S.Failed as e:\n    print('FAILED', e, flush=True)\n    sys.exit(1)\n")
+    env = dict(os.environ, CAPRI_VOICE_ROOT=root, CAPRI_STANDALONE_URL=url, CAPRI_STANDALONE_SHA=sha)
+    return subprocess.Popen([sys.executable, "-c", code, os.path.dirname(REMOTE)], stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True, env=env)
+
+
+def test_standalone_python():
+    """The standalone CPython the voice's venv is made with when the machine's own Python has no venv (Ubuntu 26.04
+    without python3-venv): a download and an unpack of the run's own, hashed on disk, tried, one rename."""
+    base = tempfile.mkdtemp()
+    try:
+        good = standalone_archive()
+        sha = hashlib.sha256(good).hexdigest()
+        srv = Served(good)
+        root = os.path.join(base, "voice1")
+        procs = [fetch(root, srv.url, sha) for _ in range(2)]
+        outs = []
+        for p in procs:
+            out, _ = p.communicate(timeout=120)
+            outs.append((p.returncode, out))
+        check("standalone: two runs at once both get a working Python", all(c == 0 and "GOT " in o for c, o in outs),
+              outs)
+        check("standalone: it is in place", os.access(os.path.join(root, "python", "bin", "python3"), os.X_OK) and
+              len(os.listdir(os.path.join(root, "python", "lib", "python3.11"))) == 200)
+        check("standalone: no download or unpack of either run left over", sorted(os.listdir(root)) == ["python"],
+              os.listdir(root))
+        check("standalone: each run downloaded into a file of its own and said so", srv.gets == 2 and
+              all("downloaded: " in o and "as published" in o and "unpacked (" in o for _, o in outs), outs)
+        p = fetch(root, srv.url, sha)
+        out, _ = p.communicate(timeout=60)
+        check("standalone: one put there meanwhile by another run is the one used", p.returncode == 0 and
+              "meanwhile: that one is used" in out and sorted(os.listdir(root)) == ["python"], out[-300:])
+        srv.close()
+
+        # what the machine downloads is not what python-build-standalone publishes: nothing put in place
+        bad = Served(standalone_archive(extra=[("python/evil.txt", b"x")]))
+        root = os.path.join(base, "voice2")
+        p = fetch(root, bad.url, sha)
+        out, _ = p.communicate(timeout=60)
+        check("standalone: a download that does not hash as published is refused, nothing left",
+              p.returncode == 1 and "does not hash as python-build-standalone publishes it" in out and
+              os.listdir(root) == [], out[-300:])
+        bad.close()
+        # a download cut halfway (the length the server said is not what came)
+        cut = Served(good, cut=True)
+        root = os.path.join(base, "voice3")
+        p = fetch(root, cut.url, sha)
+        out, _ = p.communicate(timeout=60)
+        check("standalone: a download cut halfway is refused, nothing left", p.returncode == 1 and
+              ("download stopped at" in out or "does not hash" in out) and os.listdir(root) == [], out[-300:])
+        cut.close()
+        # an archive whose Python is not the version pinned
+        old = standalone_archive(version="3.11.17")
+        srv = Served(old)
+        root = os.path.join(base, "voice4")
+        p = fetch(root, srv.url, hashlib.sha256(old).hexdigest())
+        out, _ = p.communicate(timeout=60)
+        check("standalone: a Python that is not 3.11.18 is refused, nothing left", p.returncode == 1 and
+              "does not run as 3.11.18" in out and os.listdir(root) == [], out[-300:])
+        srv.close()
+        # an archive with a name outside python/
+        evil = standalone_archive(extra=[("../escape.txt", b"x")])
+        srv = Served(evil)
+        root = os.path.join(base, "voice5")
+        p = fetch(root, srv.url, hashlib.sha256(evil).hexdigest())
+        out, _ = p.communicate(timeout=60)
+        check("standalone: an archive naming a file outside python/ is refused", p.returncode == 1 and
+              "archive has '../escape.txt'" in out and not os.path.exists(os.path.join(base, "escape.txt")) and
+              os.listdir(root) == [], out[-300:])
+        srv.close()
+        # a python/ left unfinished by a run that stopped halfway: moved aside, the new one put in place
+        srv = Served(good)
+        root = os.path.join(base, "voice6")
+        os.makedirs(os.path.join(root, "python", "lib"))
+        p = fetch(root, srv.url, sha)
+        out, _ = p.communicate(timeout=60)
+        names = sorted(os.listdir(root))
+        check("standalone: an unfinished python/ moved aside", p.returncode == 0 and len(names) == 2 and
+              names[0] == "python" and names[1].startswith("python.unfinished-") and "moved aside" in out and
+              os.path.isfile(os.path.join(root, "python", "bin", "python3")), (names, out[-300:]))
+        srv.close()
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_masks():
+    """Her voice's path is masked everywhere; a log's own name (capri-voice-staging-<time>.log) never is."""
+    sys.path.insert(0, os.path.dirname(REMOTE))
+    import capri_kit as K  # noqa: PLC0415
+    import capri_server as S  # noqa: PLC0415
+    secret = "capri-voice-" + "9f3a" * 6
+    for name, f in (("kit", K.clean), ("machine", S.clean), ("voz", Z.mask)):
+        for log in ("capri-voice-staging-20261112-021326.log", "capri-voice-production-20261112-021330.log",
+                    "C:\\Users\\x\\kit\\capri-voice-staging-20261112-021326.log"):
+            check(f"mask ({name}): a log's name stays readable: {log}", f(f"log {log}") == f"log {log}", f(log))
+        check(f"mask ({name}): her voice's path", f(f"https://h/{secret}/v1/audio/speech") ==
+              "https://h/capri-voice-<secret>/v1/audio/speech", f(secret))
+
+
 def main():
-    for t in (test_build, test_migration, test_refusals, test_voz, test_mo, test_remote, test_one_line_site,
-              test_kit_flow, test_bats):
+    for t in (test_build, test_migration, test_refusals, test_voz, test_mo, test_masks, test_standalone_python,
+              test_machine_lock, test_brain_remote, test_kit_brain, test_remote, test_one_line_site, test_kit_flow,
+              test_bats):
         try:
             t()
         except Exception:  # noqa: BLE001

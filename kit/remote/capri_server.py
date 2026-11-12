@@ -53,7 +53,13 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
+import traceback
+try:
+    import fcntl
+except ImportError:  # Windows: the kit's rehearsal runs this file's code there; the lock is the machine's (Linux)
+    fcntl = None
 import urllib.error
 import urllib.request
 import zipfile
@@ -67,7 +73,7 @@ STATE_DIR = os.environ.get("CAPRI_KIT_STATE", "/root/capri-kit")
 NGINX = os.environ.get("CAPRI_NGINX", "nginx").split()
 CURL = os.environ.get("CAPRI_CURL", "curl").split()
 SECRET_RX = re.compile(r"capri-brain-[0-9A-Za-z]{6,}")
-VOICE_SECRET_RX = re.compile(r"capri-voice-[0-9A-Za-z]{6,}")
+VOICE_SECRET_RX = re.compile(r"capri-voice-[0-9a-fA-F]{12,}")   # its path: capri-voice-<24 hex>
 # Capri's voice on this machine (cmd_voice)
 VOICE_ROOT = os.environ.get("CAPRI_VOICE_ROOT", "/opt/capri-voice")
 VOICE_PORT = int(os.environ.get("CAPRI_VOICE_PORT", "8891"))
@@ -78,9 +84,12 @@ VOICE_PYTHON = os.environ.get("CAPRI_VOICE_PYTHON", "")      # the Python to mak
 POCKET_PIN = "4.0.1"        # what a player's own local engine runs (checked on the owner's laptop, 2026-11-12)
 TORCH_PIN = "2.15.0"
 TORCH_INDEX = "https://download.pytorch.org/whl/cpu"
-STANDALONE_URL = ("https://github.com/astral-sh/python-build-standalone/releases/download/20261026/"
-                  "cpython-3.11.18%2B20261026-x86_64-unknown-linux-gnu-install_only.tar.gz")
-STANDALONE_SHA = "a87ee63646c8f8438b7af3954b2135ed2af91d033c631f12a8f20af903046d06"
+STANDALONE_URL = os.environ.get("CAPRI_STANDALONE_URL") or (
+    "https://github.com/astral-sh/python-build-standalone/releases/download/20261026/"
+    "cpython-3.11.18%2B20261026-x86_64-unknown-linux-gnu-install_only.tar.gz")
+STANDALONE_SHA = os.environ.get("CAPRI_STANDALONE_SHA") or \
+    "a87ee63646c8f8438b7af3954b2135ed2af91d033c631f12a8f20af903046d06"   # 49036443 B (checked 2026-11-12)
+STANDALONE_VERSION = "3.11.18"
 VOICE_RATE = "40r/m"        # one address: twenty lines at once, then one every second and a half
 VOICE_BURST = 20
 VOICE_MARK = "# XyberRP Capri kit: her voice for every player"
@@ -113,6 +122,86 @@ def say(text=""):
 
 def result(**kw):
     print("CAPRI-RESULT " + clean(json.dumps(kw, sort_keys=True)), flush=True)
+
+
+def where(e) -> str:
+    """Where an unexpected error came from: file names, lines and functions only (never a value)."""
+    frames = traceback.extract_tb(e.__traceback__)[-6:]
+    return " <- ".join(f"{os.path.basename(f.filename)}:{f.lineno} {f.name}" for f in reversed(frames))
+
+
+# The commands that change this machine, and how long one waits (s) for another run of this kit that is changing it:
+# two bats run at once (C2 and C3) take turns instead of working on the same files at the same moment.  Under the
+# caller's own timeout (capri_kit.py: 3600 s for voice, 600 s for the others).
+CHANGING = {"voice": 3000, "gate": 480, "assemble": 480, "import": 480, "putback": 480, "guard": 480,
+            "guard-putback": 480, "brain": 480}
+
+
+class MachineLock:
+    """STATE_DIR/kit.lock (flock), held while one command changes this machine; it names its holder.  The kernel lets
+    go of it when the holder ends, however it ends (a dropped SSH session too): nothing is ever left locked."""
+
+    def __init__(self, a):
+        self.a = a
+        wait = os.environ.get("CAPRI_KIT_LOCK_WAIT", "")
+        self.limit = int(wait) if wait.isdigit() else CHANGING[a.command]
+        self.path = os.path.join(STATE_DIR, "kit.lock")
+        self.f = None
+
+    def holder(self) -> str:
+        try:
+            with open(self.path, encoding="utf-8") as f:
+                h = json.loads(f.read() or "{}")
+        except (OSError, ValueError):
+            h = {}
+        if not h:
+            return "another run of this kit"
+        what = h.get("command", "?") + (f" for {h['role']}" if h.get("role") else "")
+        return f"{what}, pid {h.get('pid', '?')}, since {h.get('since', '?')} UTC"
+
+    def __enter__(self):
+        if fcntl is None:
+            return self
+        os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
+        self.f = open(self.path, "a+", encoding="utf-8")
+        t0 = time.time()
+        told = 0.0
+        while True:
+            try:
+                fcntl.flock(self.f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                now = time.time()
+                if now - t0 >= self.limit:
+                    who = self.holder()
+                    self.f.close()
+                    raise Failed(f"another run of this kit is still changing this machine ({who}) after "
+                                 f"{int(now - t0)} s of waiting: nothing done here -- run this again when it is done")
+                if now - told >= 30:
+                    say(f"another run of this kit is changing this machine ({self.holder()}): waiting for it "
+                        f"({int(now - t0)} s so far, {max(1, self.limit // 60)} min at most)")
+                    told = now
+                time.sleep(1)
+        waited = time.time() - t0
+        if waited >= 1:
+            say(f"the other run is done (waited {waited:.0f} s): this one goes on")
+        self.f.seek(0)
+        self.f.truncate()
+        self.f.write(json.dumps({"pid": os.getpid(), "command": self.a.command, "role": self.a.role or "",
+                                 "since": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")}))
+        self.f.flush()
+        return self
+
+    def __exit__(self, *exc):
+        if self.f is None:
+            return
+        try:
+            self.f.seek(0)
+            self.f.truncate()
+            self.f.flush()
+        finally:
+            fcntl.flock(self.f.fileno(), fcntl.LOCK_UN)
+            self.f.close()
 
 
 def run(argv, timeout=60, env=None, cwd=None):
@@ -508,6 +597,7 @@ def brain_unit(proxy_pass: str | None) -> dict:
     m2 = re.search(r"pid=(\d+)", ss)
     if m2:
         pid = m2.group(1)
+        out["pid"] = int(pid)
     unit = None
     if pid:
         try:
@@ -1484,7 +1574,7 @@ def machine_facts() -> dict:
 
 def pick_python() -> tuple[str, str]:
     """The Python her voice's venv is made with: the system's (3.10-3.14, with venv and ensurepip), else a fixed
-    standalone CPython 3.11.18 (hash checked) in VOICE_ROOT/python -- the one Capri Voz for Linux uses too."""
+    standalone CPython (STANDALONE_VERSION, hash checked) in VOICE_ROOT/python."""
     if VOICE_PYTHON:
         return VOICE_PYTHON, "given"
     for cand in ("python3.12", "python3.11", "python3.13", "python3.10", "python3"):
@@ -1498,27 +1588,77 @@ def pick_python() -> tuple[str, str]:
         say(f"  {cand} ({p}): not usable for a venv ({(ver or out.strip()[-120:]) or code})")
     py = os.path.join(VOICE_ROOT, "python", "bin", "python3")
     if os.path.isfile(py):
-        return py, "the standalone CPython 3.11.18 kept in " + os.path.join(VOICE_ROOT, "python")
-    say("  no system Python with venv: downloading the standalone CPython 3.11.18 (about 30 MB, hash checked)")
-    os.makedirs(VOICE_ROOT, exist_ok=True)
-    tmp = os.path.join(VOICE_ROOT, "python.tar.gz.part")
-    req = urllib.request.Request(STANDALONE_URL, headers={"User-Agent": "capri-kit"})
-    h = hashlib.sha256()
-    with urllib.request.urlopen(req, timeout=300) as r, open(tmp, "wb") as f:
-        for chunk in iter(lambda: r.read(1 << 20), b""):
-            h.update(chunk)
-            f.write(chunk)
-    if h.hexdigest() != STANDALONE_SHA:
-        os.remove(tmp)
-        raise Failed("the standalone Python downloaded does not hash as python-build-standalone publishes it")
+        return py, f"the standalone CPython {STANDALONE_VERSION} kept in " + os.path.join(VOICE_ROOT, "python")
+    say(f"  no system Python with venv: downloading the standalone CPython {STANDALONE_VERSION} (about 50 MB, "
+        f"hash checked)")
+    return fetch_standalone(py)
+
+
+def fetch_standalone(py: str) -> tuple[str, str]:
+    """python-build-standalone's CPython into VOICE_ROOT/python: downloaded into a file of this run's own, hashed as
+    it lies on disk, unpacked into a folder of this run's own, tried, then put in place with one rename -- another
+    run at the same time (two bats at once) can never hand this one a half-written file."""
     import tarfile  # noqa: PLC0415
-    with tarfile.open(tmp) as t:
-        for m in t.getmembers():
-            if m.name.startswith("/") or ".." in m.name.split("/") or not m.name.startswith("python/"):
-                raise Failed(f"the standalone Python's archive has {m.name!r}")
-        t.extractall(VOICE_ROOT)  # noqa: S202 -- names checked above
-    os.remove(tmp)
-    return py, "the standalone CPython 3.11.18, just downloaded (hash checked)"
+    os.makedirs(VOICE_ROOT, exist_ok=True)
+    dest = os.path.dirname(os.path.dirname(py))
+    fd, tmp = tempfile.mkstemp(prefix=".python-", suffix=".tar.gz.part", dir=VOICE_ROOT)
+    unpack = None
+    t0 = time.time()
+    try:
+        req = urllib.request.Request(STANDALONE_URL, headers={"User-Agent": "capri-kit"})
+        got = 0
+        with urllib.request.urlopen(req, timeout=300) as r, os.fdopen(fd, "wb") as f:
+            expect = int(r.headers.get("Content-Length") or 0)
+            for chunk in iter(lambda: r.read(1 << 20), b""):
+                f.write(chunk)
+                got += len(chunk)
+        if expect and got != expect:
+            raise Failed(f"the standalone Python's download stopped at {got} of {expect} bytes: run this again")
+        digest = sha256_file(tmp)
+        if digest != STANDALONE_SHA:
+            raise Failed(f"the standalone Python downloaded ({got} B, sha256 {digest[:16]}...) does not hash as "
+                         f"python-build-standalone publishes it ({STANDALONE_SHA[:16]}...)")
+        say(f"    downloaded: {got} B in {time.time() - t0:.1f} s, sha256 {digest[:16]}... as published")
+        unpack = tempfile.mkdtemp(prefix=".python-", dir=VOICE_ROOT)
+        with tarfile.open(tmp, "r:gz") as t:
+            members = t.getmembers()
+            for m in members:
+                if m.name.startswith("/") or ".." in m.name.split("/") or not m.name.startswith("python/"):
+                    raise Failed(f"the standalone Python's archive has {m.name!r}")
+            if hasattr(tarfile, "data_filter"):
+                t.extractall(unpack, filter="data")
+            else:
+                t.extractall(unpack)  # noqa: S202 -- names checked above
+        mine = os.path.join(unpack, "python", "bin", "python3")
+        code, out = run([mine, "-c", "import sys, ensurepip, venv; print('%d.%d.%d' % sys.version_info[:3])"],
+                        timeout=60)
+        ver = out.strip().splitlines()[-1] if out.strip() else ""
+        if code != 0 or ver != STANDALONE_VERSION:
+            raise Failed(f"the standalone Python unpacked does not run as {STANDALONE_VERSION} with venv "
+                         f"(exit {code}: {out.strip()[-200:]})")
+        say(f"    unpacked ({len(members)} files) and tried: Python {ver} with venv and ensurepip")
+        if os.path.isfile(py):
+            say(f"    (another run of this kit put one in {dest} meanwhile: that one is used)")
+            return py, f"the standalone CPython {STANDALONE_VERSION} kept in {dest}"
+        if os.path.lexists(dest):
+            aside = dest + ".unfinished-" + time.strftime("%Y%m%d-%H%M%S")
+            os.rename(dest, aside)
+            say(f"    an unfinished {dest} (a run that stopped halfway) moved aside: {aside}")
+        try:
+            os.rename(os.path.join(unpack, "python"), dest)
+        except OSError:
+            if not os.path.isfile(py):
+                raise
+            say(f"    (another run of this kit put one in {dest} meanwhile: that one is used)")
+        return py, f"the standalone CPython {STANDALONE_VERSION}, just downloaded (hash checked)"
+    finally:
+        for path in (tmp,):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        if unpack:
+            shutil.rmtree(unpack, ignore_errors=True)
 
 
 def voice_versions(venv_py: str) -> dict:
@@ -1978,10 +2118,301 @@ def cmd_gate(a) -> int:
     return 0
 
 
+
+# ------------------------------------------------------------------------------------------------ the brain's program
+# capri-brain.mjs as this kit's earlier builds left it (sha256): a file that is one of these is replaced whole; any
+# other is changed in its Mass Override line only, or not at all.
+BRAIN_KNOWN = {
+    "07774166e7bdc43f78690f4085f16ea7c8a79ce5055cf1f53c0b453003322ef9": "982374d (2026-11-11, the Mass Override shortcut)",
+}
+BRAIN_OLD_RX = ("const MASS_OVERRIDE_REQUEST =\n  /change everything around me|mass[\\s-]*override|everything around me[^.!?]*"
+                "(lights|screens|cars)|(lights|screens|cars)[^.!?]*(go out|turn hostile)/i;\n")
+BRAIN_ASK_SYSTEM = 'Capri kit check.\n {"do":"mass_override","target":...} change everything around V at once\n'
+BRAIN_ASKS = ("mass over ride", "MASS OVERRIDE")
+
+
+def brain_script(pid: int) -> tuple[str, str]:
+    """(capri-brain.mjs, node) of the process behind the brain's port: its command line, read from /proc."""
+    try:
+        argv = [x.decode("utf-8", errors="replace") for x in open(f"/proc/{pid}/cmdline", "rb").read().split(b"\0") if x]
+        cwd = os.readlink(f"/proc/{pid}/cwd")
+    except OSError as e:
+        raise Failed(f"the brain's process ({pid}) cannot be read: {e}") from e
+    script = next((x for x in argv[1:] if x.endswith(".mjs") or x.endswith(".js")), "")
+    if not script:
+        raise Failed(f"the brain's process runs no .mjs file: {clean(' '.join(argv)[:160])}")
+    script = os.path.realpath(os.path.join(cwd, script))
+    node = argv[0] if os.path.isabs(argv[0]) else (shutil.which(argv[0]) or "")
+    if not node:
+        try:
+            node = os.readlink(f"/proc/{pid}/exe")
+        except OSError:
+            node = shutil.which("node") or "node"
+    return script, node
+
+
+def brain_mo_block(new: str) -> str:
+    """The new file's Mass Override recognizer: from its MASS_OVERRIDE_WORDS line to the end of MASS_OVERRIDE_REQUEST."""
+    m = re.search(r"^const MASS_OVERRIDE_WORDS = .*?^\);\n", new, re.S | re.M)
+    if not m or "const MASS_OVERRIDE_REQUEST = new RegExp(" not in m.group(0):
+        raise Failed("the capri-brain.mjs sent along has no Mass Override recognizer this kit can carry over")
+    return m.group(0)
+
+
+def brain_post(port: int, said: str, timeout=10) -> tuple[int, dict, float]:
+    """One chat request to the brain on this machine, the way a game with Mass Override sends one: (status, reply)."""
+    body = json.dumps({"model": "capri-brain", "max_tokens": 32, "messages": [
+        {"role": "system", "content": BRAIN_ASK_SYSTEM}, {"role": "user", "content": said}]}).encode("utf-8")
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/chat/completions", data=body, method="POST",
+                                 headers={"Content-Type": "application/json"})
+    t0 = time.time()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = json.loads(r.read().decode("utf-8", errors="replace"))
+            st = r.status
+    except urllib.error.HTTPError as e:
+        return e.code, {}, time.time() - t0
+    except (urllib.error.URLError, OSError, ValueError):
+        return 0, {}, time.time() - t0
+    try:
+        reply = json.loads(((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "{}")
+    except ValueError:
+        reply = {}
+    return st, reply if isinstance(reply, dict) else {}, time.time() - t0
+
+
+def brain_hears(port: int) -> list[str]:
+    """Each of BRAIN_ASKS to the brain here: what is wrong ([] when every one comes back as a cast at once)."""
+    wrong = []
+    for said in BRAIN_ASKS:
+        st, reply, took = brain_post(port, said)
+        acts = [x.get("do") for x in reply.get("actions") or [] if isinstance(x, dict)]
+        ok = st == 200 and "mass_override" in acts and took < 5
+        say(f"  {said!r} -> {st or 'no answer'} in {took:.2f} s: " + (f"actions {acts}, {reply.get('say')!r}" if st == 200
+                                                                     else "no reply") + ("" if ok else "  !! not a cast"))
+        if not ok:
+            wrong.append(said)
+    return wrong
+
+
+def brain_restarted(unit: str, port: int, since: float, want_build: str | None, wait=45) -> dict:
+    """The unit restarted, then its health on the brain's port from a process that started after SINCE."""
+    code, out = run(SYSTEMCTL + ["restart", unit], timeout=60)
+    if code != 0:
+        raise Failed(f"systemctl restart {unit}: exit {code}: {out.strip()[-200:]}")
+    t0 = time.time()
+    last = None
+    while time.time() - t0 < wait:
+        try:
+            h = http_json(f"http://127.0.0.1:{port}/health", timeout=3)
+            fresh = isinstance(h.get("uptimeSeconds"), (int, float)) and h["uptimeSeconds"] <= time.time() - since + 2
+            if fresh and (not want_build or h.get("build") == want_build):
+                return h
+            last = f"up {h.get('uptimeSeconds')} s, build {h.get('build')}"
+        except Exception as e:  # noqa: BLE001
+            last = e.__class__.__name__
+        time.sleep(1)
+    raise Failed(f"the brain did not come back on 127.0.0.1:{port} in {wait} s after its restart (last: {last})")
+
+
+def gate_lines(role: str, n=8) -> list[str]:
+    """(read only) ROLE's gate's last casts, refusals and reports, as its journal has them."""
+    folder, unit, port, public = gate_paths(role)
+    code, out = run(["journalctl", "-u", unit, "-n", "400", "--no-pager", "-o", "short-iso"], timeout=20)
+    return [l for l in out.splitlines() if "[cast]" in l or "[report]" in l][-n:]
+
+
+def net_facts() -> list[str]:
+    """(read only) What on this machine could drop or refuse a player's connection: firewall rules that limit new
+    connections per address, the kernel's dropped connection attempts, the connection table, nginx's own limits hit
+    lately.  On 2026-11-12 one PC's requests failed now and then ("Failed to connect ... after 21025 ms", "Connection
+    was reset") while the other's went through."""
+    out = []
+    code, o = run(["ufw", "status", "verbose"], timeout=15)
+    if code == 0 and o.strip():
+        lim = [l.strip() for l in o.splitlines() if " LIMIT " in f" {l.upper()} "]
+        out.append(f"ufw: {o.splitlines()[0].strip()}; rules that LIMIT new connections: {len(lim)}"
+                   + (" -- " + " | ".join(lim[:6]) if lim else ""))
+    code, o = run(["iptables", "-S"], timeout=15)
+    if code == 0:
+        lim = [l.strip() for l in o.splitlines() if re.search(r"--limit|-m recent|hashlimit|connlimit", l)]
+        out.append(f"iptables: {len(o.splitlines())} rule(s), {len(lim)} limiting" + (" -- " + " | ".join(lim[:6]) if lim else ""))
+    code, o = run(["nft", "list", "ruleset"], timeout=15)
+    if code == 0:
+        lim = [l.strip() for l in o.splitlines() if re.search(r"\blimit rate\b|\bmeter\b|ct count|\bquota\b", l)]
+        out.append(f"nft: {len(o.splitlines())} line(s), {len(lim)} limiting" + (" -- " + " | ".join(lim[:6]) if lim else ""))
+    code, o = run(["nstat", "-az", "TcpExtListenDrops", "TcpExtListenOverflows", "TcpExtTCPReqQFullDrop",
+                   "TcpExtSyncookiesSent", "TcpExtTCPAbortOnData"], timeout=10)
+    if code == 0:
+        vals = {m.group(1): m.group(2) for m in re.finditer(r"^(\w+)\s+(\d+)", o, re.M)}
+        out.append("kernel since boot: " + ", ".join(f"{k.replace('TcpExt', '')} {v}" for k, v in vals.items()))
+    try:
+        cnt = open("/proc/sys/net/netfilter/nf_conntrack_count").read().strip()
+        mx = open("/proc/sys/net/netfilter/nf_conntrack_max").read().strip()
+        out.append(f"connection table: {cnt} of {mx}")
+    except OSError:
+        pass
+    hits = {}
+    for path in ("/var/log/nginx/error.log",):
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                tail = f.readlines()[-5000:]
+        except OSError:
+            continue
+        for l in tail:
+            m = re.search(r"limiting (requests|connections)[^,]*, excess[^,]*, by zone \"([^\"]+)\"|limiting (connections) by zone \"([^\"]+)\"", l)
+            if m:
+                key = (m.group(1) or m.group(3)) + " " + (m.group(2) or m.group(4))
+                hits[key] = hits.get(key, 0) + 1
+        out.append("nginx limits hit (its error log's last 5000 lines): " + (", ".join(f"{k} x{v}" for k, v in hits.items())
+                                                                              or "none"))
+    return out
+
+
+def cmd_brain(a) -> int:
+    """The brain's program updated to the kit's capri-brain.mjs: Mass Override however a player types it ("mass over
+    ride" went to the model, which answered with banter).  Kept first, checked by node, the unit restarted, asked here;
+    put back on any failure."""
+    sent = os.path.join(a.work, "capri-brain.mjs")
+    if not os.path.isfile(sent):
+        raise Failed("capri-brain.mjs was not sent along")
+    new = open(sent, encoding="utf-8").read()
+    build = re.search(r"^const BRAIN_BUILD = '([^']+)';", new, re.M)
+    if not build or "MASS_OVERRIDE_WORDS" not in new:
+        raise Failed("the capri-brain.mjs sent along is not the one that hears Mass Override however it is typed")
+    build = build.group(1)
+    block = brain_mo_block(new)
+    b = brain()
+    u = brain_unit(b["proxy_pass"])
+    port, pid = u.get("port"), u.get("pid")
+    unit = os.environ.get("CAPRI_BRAIN_UNIT") or u.get("unit")
+    say(f"the brain: {b['host']}{clean(b['base'])} -> 127.0.0.1:{port}, unit {unit or '?'} ({u.get('state', '?')}), "
+        f"pid {pid or '?'}")
+    say("its last requests (how each went; never what was said):")
+    for l in u.get("chats") or ["(none in its journal)"]:
+        say("  " + l[:220])
+    for role in ("production", "staging"):
+        lines = gate_lines(role)
+        if lines:
+            say(f"(read only) {ROLES[role][1]}'s gate lately:")
+            for l in lines:
+                say("  " + l[:260])
+    say("(read only) what on this machine could drop a player's connection:")
+    for l in net_facts() or ["(nothing could be read)"]:
+        say("  " + l[:400])
+    if not port or not pid:
+        raise Failed("no process listens on the brain's port: nothing changed")
+    if not unit:
+        raise Failed("the unit behind the brain's port is not known (its process is not in a .service): nothing changed")
+    script, node = brain_script(pid)
+    cur = open(script, encoding="utf-8").read()
+    cur_sha = hashlib.sha256(cur.encode("utf-8")).hexdigest()
+    say(f"its program: {script} ({len(cur)} B, sha256 {cur_sha[:16]}...), run by {node}")
+    health = u.get("health") if isinstance(u.get("health"), dict) else {}
+    if cur == new:
+        say(f"it is this kit's build already ({build}); running: {health.get('build') or '?'}")
+        wrong = brain_hears(port)
+        if not wrong and health.get("build") == build:
+            fd = os.open(os.path.join(a.work, "brain.url"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
+                f.write(b["url"] + "\n")
+            result(command="brain", changed=False, why="already", build=build)
+            return NO
+        say("  (the file is the new one but the brain running is not, or does not hear it: restarted below)")
+        data, how = new, "the same file, restarted"
+    elif cur_sha in BRAIN_KNOWN:
+        data, how = new, f"replaced whole: it was this kit's earlier build {BRAIN_KNOWN[cur_sha]}"
+    elif re.search(r"^const BRAIN_BUILD = '[^']+';", cur, re.M) and "MASS_OVERRIDE_WORDS" in cur:
+        was = re.search(r"^const BRAIN_BUILD = '([^']+)';", cur, re.M).group(1)
+        data, how = new, f"replaced whole: it was this kit's build {was}"
+    elif cur.count(BRAIN_OLD_RX) == 1:
+        data, how = cur.replace(BRAIN_OLD_RX, block), "its Mass Override recognizer replaced, the rest of it as it was"
+        build = None
+    else:
+        raise Failed(f"{script} is not a brain this kit knows and has no Mass Override line it can replace: nothing "
+                     f"changed (sha256 {cur_sha[:16]}..., {len(cur)} B)")
+    st = os.stat(script)
+    # next to it, and still a .mjs: node only checks an ES module by its extension
+    tmp = os.path.join(os.path.dirname(script), ".capri-kit-new-" + os.path.basename(script))
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(data)
+    os.chmod(tmp, stat_mode(st))
+    try:
+        os.chown(tmp, st.st_uid, st.st_gid)
+    except OSError:
+        pass
+    code, out = run([node, "--check", tmp], timeout=60)
+    if code != 0:
+        os.remove(tmp)
+        raise Failed(f"node does not accept the new program: nothing changed ({out.strip()[-300:]})")
+    say(f"node --check: the new program is accepted ({len(data)} B)")
+    keep = os.path.join(STATE_DIR, "brain")
+    os.makedirs(keep, mode=0o700, exist_ok=True)
+    kept = os.path.join(keep, f"capri-brain.mjs.before-capri-kit-{time.strftime('%Y%m%d-%H%M%S')}")
+    shutil.copy2(script, kept)
+    os.chmod(kept, 0o600)
+    os.replace(tmp, script)
+    say(f"{script}: {how}; kept first: {kept}")
+    since = time.time()
+    try:
+        h = brain_restarted(unit, port, since, build)
+        say(f"{unit} restarted: up again in {time.time() - since:.1f} s, build {h.get('build') or '(none: an older '
+            f'brain with the new recognizer)'}, backend {h.get('backend')} {'answers' if h.get('backendOk') else 'does NOT answer'}")
+        say("asked here, the way a game with Mass Override asks it:")
+        wrong = brain_hears(port)
+        if wrong:
+            raise Failed("it still does not cast for: " + ", ".join(repr(w) for w in wrong))
+        again = brain()
+        say(f"through nginx: v1/models -> 200 ({', '.join(again.get('models') or [])})")
+    except Failed as e:
+        say(f"!! {e} -- PUT BACK: the program as it was, and the unit restarted")
+        shutil.copy2(kept, script)
+        os.chmod(script, stat_mode(st))
+        try:
+            os.chown(script, st.st_uid, st.st_gid)
+        except OSError:
+            pass
+        try:
+            h = brain_restarted(unit, port, time.time(), None)
+            say(f"put back: the brain answers again (up {h.get('uptimeSeconds')} s)")
+        except Failed as e2:
+            say(f"!! put back, but it does not answer yet: {e2}")
+        raise Failed(f"the brain was put back as it was: {e}") from e
+    code, j = run(["journalctl", "-u", unit, "-n", "40", "--no-pager", "-o", "short-iso"], timeout=20)
+    for l in [l for l in j.splitlines() if "[capri-brain]" in l][-4:]:
+        say("  journal: " + l[:220])
+    fd = os.open(os.path.join(a.work, "brain.url"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(b["url"] + "\n")
+    result(command="brain", changed=True, how=how, build=h.get("build"), kept=kept)
+    return 0
+
+
+def stat_mode(st) -> int:
+    return st.st_mode & 0o7777
+
+
+def dispatch(a) -> int:
+    if a.command == "look":
+        return cmd_look(a)
+    if a.command == "guard":
+        return cmd_guard(a)
+    if a.command == "guard-putback":
+        return cmd_guard_putback(a)
+    if a.command == "voice":
+        return cmd_voice(a)
+    if a.command == "brain":
+        return cmd_brain(a)
+    if not a.role:
+        raise Failed("--role staging or production")
+    return {"fetch": cmd_fetch, "assemble": cmd_assemble, "import": cmd_import, "verify": cmd_verify,
+            "putback": cmd_putback, "gate": cmd_gate}[a.command](a)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("command", choices=["look", "fetch", "assemble", "import", "verify", "putback", "guard",
-                                        "guard-putback", "voice", "gate"])
+                                        "guard-putback", "voice", "gate", "brain"])
     ap.add_argument("work")
     ap.add_argument("--roles", default="")
     ap.add_argument("--role", default="")
@@ -1995,25 +2426,18 @@ def main(argv=None) -> int:
     ap.add_argument("--check-only", action="store_true")
     a = ap.parse_args(argv)
     try:
-        if a.command == "look":
-            return cmd_look(a)
-        if a.command == "guard":
-            return cmd_guard(a)
-        if a.command == "guard-putback":
-            return cmd_guard_putback(a)
-        if a.command == "voice":
-            return cmd_voice(a)
-        if not a.role:
-            raise Failed("--role staging or production")
-        return {"fetch": cmd_fetch, "assemble": cmd_assemble, "import": cmd_import, "verify": cmd_verify,
-                "putback": cmd_putback, "gate": cmd_gate}[a.command](a)
+        if a.command in CHANGING and not a.check_only:
+            with MachineLock(a):
+                return dispatch(a)
+        return dispatch(a)
     except Failed as e:
         say(f"!! {e}")
         result(command=a.command, role=a.role, failed=str(e))
         return 1
-    except Exception as e:  # noqa: BLE001 -- said, never a traceback with paths of secrets
+    except Exception as e:  # noqa: BLE001 -- said with where it came from, never a value from the frames
         say(f"!! {e.__class__.__name__}: {e}")
-        result(command=a.command, role=a.role, failed=f"{e.__class__.__name__}: {e}")
+        say(f"   where: {where(e)}")
+        result(command=a.command, role=a.role, failed=f"{e.__class__.__name__}: {e}", where=where(e))
         return 1
 
 

@@ -10,6 +10,10 @@ rem   PC with her local engine keeps using it; a player's own voice choice stays
 rem   MASS OVERRIDE FOR EVERYONE.  A cast showed on the caster's screen only: the other games never
 rem   heard of it.  Now every game follows the gate from its start, and runs every cast near it --
 rem   the street around the caster, and the city's lights and billboards for everyone.
+rem   AND FROM EVERY PC (2026-11-12): typed as "mass over ride", the brain did not understand it
+rem   and nothing happened; and a cast from a PC whose connection drops now and then got lost on its
+rem   way to the server, so it ran on that screen only.  Now the brain hears it however it is
+rem   typed, and a cast is sent again until the server has it.
 rem   LEAVE STAGING FIRST: the package change refuses while anybody is on it.
 rem   1. Her voice on the machine, once for the whole machine (nothing when it is there): Pocket TTS
 rem      with her voice files from Staging's own package, a test line in English and Spanish, its
@@ -17,15 +21,18 @@ rem      own service, and its own private address in the web server with a limit
 rem      the web server is checked and put back by itself on any failure.  Then one line in each
 rem      language from this PC, the way a player's Capri Voz asks it.  The first time takes a few
 rem      minutes (about 1.5 GB is downloaded on the machine).
-rem   2. Staging's Mass Override gate updated (it keeps working for older builds), asked from here.
-rem   3. The new Capri package: the live one with the brain wired in, Mass Override for every
+rem   2. The brain on the machine hears Mass Override however V types it ("mass over ride"): its
+rem      program updated, kept first, checked by node, restarted (a second or two: a line Capri thinks
+rem      right then may fail), asked; put back by itself on any failure.  Once for the machine.
+rem   3. Staging's Mass Override gate updated (it keeps working for older builds), asked from here.
+rem   4. The new Capri package: the live one with the brain wired in, Mass Override for every
 rem      player, and Capri Voz speaking with her voice from the server -- checked with YOUR GAME'S
 rem      OWN Redscript compiler and PowerShell's own parser on this PC; nothing is sent unless both
 rem      pass.  Then it goes into Staging's mod store and server.jsonc names it (kept first).
-rem   4. The brain's per-address limits (once for the machine; nothing when they are there).
-rem   5. Staging restarted: players get the new Capri from the launcher when they join.
-rem   6. READ ONLY: what Staging hands out now, checked end to end, her voice asked again.
-rem   Nothing else changes: XyberRP's package, the brain and the other mods stay as they are.
+rem   5. The brain's per-address limits (once for the machine; nothing when they are there).
+rem   6. Staging restarted: players get the new Capri from the launcher when they join.
+rem   7. READ ONLY: what Staging hands out now, checked end to end, her voice asked again.
+rem   Nothing else changes: XyberRP's package and the other mods stay as they are.
 rem   Logs: kit\capri-*.log here, and ..\open77-av-kit\avkit-restart-*.log.
 rem ---------------------------------------------------------------------------------------------
 set "PY=%LOCALAPPDATA%\Programs\fivem2open77\runtime\python\python.exe"
@@ -52,38 +59,43 @@ echo === 1. Her own voice on the game servers' machine (the first time takes a f
 set "RVO=%ERRORLEVEL%"
 if not "%RVO%"=="0" goto novoice
 echo.
-echo === 2. Staging's Mass Override gate: every game gets every cast
+echo === 2. The brain hears Mass Override however V types it (once for the machine)
+"%PY%" -X utf8 "%CK%" brain %HOST%
+set "RBR=%ERRORLEVEL%"
+if not "%RBR%"=="0" goto nobrain
+echo.
+echo === 3. Staging's Mass Override gate: every game gets every cast
 "%PY%" -X utf8 "%CK%" gate --role staging %HOST%
 set "RGA=%ERRORLEVEL%"
 if not "%RGA%"=="0" goto nogate
 echo.
-echo === 3. The new Capri for Staging: built, checked with your game's Redscript, put on Staging
+echo === 4. The new Capri for Staging: built, checked with your game's Redscript, put on Staging
 "%PY%" -X utf8 "%CK%" publish --role staging %HOST%
 set "RC=%ERRORLEVEL%"
 if "%RC%"=="5" goto already
 if not "%RC%"=="0" goto notpublished
 call :guard
 echo.
-echo === 5. Staging restarted: players get the new Capri when they join
+echo === 6. Staging restarted: players get the new Capri when they join
 "%PY%" -X utf8 "%AV%" restart --on open77-xbuniverse-staging %HOST%
 set "RS=%ERRORLEVEL%"
 if not "%RS%"=="0" goto notrestarted
 :verify
 echo.
-echo === 6. READ ONLY: what Staging hands out now
+echo === 7. READ ONLY: what Staging hands out now
 "%PY%" -X utf8 "%CK%" verify --role staging %HOST%
 set "RV=%ERRORLEVEL%"
 if not "%RV%"=="0" goto notverified
-if not "%RG%"=="0" echo (Step 4 did NOT add the brain's per-address limits: see its lines above.)
+if not "%RG%"=="0" echo (Step 5 did NOT add the brain's per-address limits: see its lines above.)
 echo.
 echo Done.  Now on BOTH PCs (the laptop and the desktop):
 echo   1. join XyberRP Staging through the Open77 launcher: it names Capri's new build and asks
 echo      once before installing it (it carries a DLL) -- accept;
 echo   2. load in: on the desktop her greeting should NOT mention a Windows voice, and she speaks
 echo      with her own voice (it comes from the server: the first line can take a second or two);
-echo   3. stand near each other and have Capri cast Mass Override on one PC ("Capri, mass
-echo      override"): the other PC's street, lights and billboards should go too, within a couple
-echo      of seconds;
+echo   3. stand near each other and type Mass Override to Capri on one PC, the way you do ("mass
+echo      over ride" works now): the other PC's street, lights and billboards should go too, within
+echo      a few seconds -- then the same from the other PC;
 echo   4. then run C1 here: it shows her voice's last lines and every game the gate saw run a cast.
 echo Then tell Claude how it went.  If all is fine, C3 does the same for live XyberRP.
 pause
@@ -97,7 +109,7 @@ goto verify
 
 :guard
 echo.
-echo === 4. The brain's per-address limits (its private address goes to every player)
+echo === 5. The brain's per-address limits (its private address goes to every player)
 "%PY%" -X utf8 "%CK%" guard %HOST%
 set "RG=%ERRORLEVEL%"
 exit /b 0
@@ -115,6 +127,13 @@ echo Nothing else was changed: the gate and Staging's Capri package are as they 
 pause
 exit /b %RVO%
 
+:nobrain
+echo.
+echo The brain was NOT updated (exit %RBR%): see the lines above, and tell Claude "done".  It is as
+echo it was (put back by itself if anything failed).  Nothing else was changed.
+pause
+exit /b %RBR%
+
 :nogate
 echo.
 echo Staging's Mass Override gate was NOT updated, or it does not answer (exit %RGA%): the old
@@ -128,7 +147,7 @@ echo Staging's Capri was NOT changed (exit %RC%): see the lines above, and tell 
 echo (exit 3: somebody is on Staging -- you too count -- or its Capri changed meanwhile: leave
 echo it and run this again.  exit 2: this PC could not check the package with your game's
 echo Redscript -- the lines above say why.  exit 1: something else; nothing was sent.)
-echo Her voice and the gate (steps 1-2) are in place and harmless without the new package.
+echo Her voice, the brain and the gate (steps 1-3) are in place and harmless without the new package.
 pause
 exit /b %RC%
 

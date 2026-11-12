@@ -324,3 +324,54 @@ test("/state names the clients polling and the recent casts", async () => {
     await srv.close();
   }
 });
+
+test("the same cast sent again (its first try got no answer) is answered with the cast on, never run twice", async () => {
+  const lines = [];
+  const srv = await start({ log: (l) => lines.push(l) });
+  try {
+    const cast = { session: "s111111222222", token: "s111111222222-1", mode: "blink", x: -686.3, y: 1151.7, z: 28.6,
+      candidates: candidates(4, "c") };
+    const first = await post(srv.base, "/cast", cast);
+    assert.equal(first.status, 200);
+    srv.advance(3000);
+    // the second try: same token -- inside the caster's recharge, still answered as the cast it is
+    const again = await post(srv.base, "/cast", cast);
+    assert.equal(again.status, 200);
+    assert.equal(again.body.duplicate, true);
+    assert.equal(again.body.event.castId, first.body.event.castId);
+    assert.equal(again.body.event.mode, "blink");
+    // handed out once
+    const feed = await (await fetch(`${srv.base}/casts?since=0&session=s999`)).text();
+    assert.equal(feed.trim().split("\n").length, 2, feed);
+    const state = await (await fetch(`${srv.base}/state`)).json();
+    assert.equal(state.stats.casts, 1);
+    assert.equal(state.stats.again, 1);
+    assert.equal(state.balances.s111111222222, 75, "charged once");
+    assert.ok(lines.some((l) => /^\[cast\] again from s111111222222 token=s111111222222-1: seq=1 is on already/.test(l)), lines.join("\n"));
+    // a NEW cast inside the recharge is still refused
+    const next = await post(srv.base, "/cast", { ...cast, token: "s111111222222-2" });
+    assert.equal(next.status, 409);
+    assert.equal(next.body.reason, "on_cooldown");
+    // another game's cast with the same token text is its own cast
+    const other = await post(srv.base, "/cast", { ...cast, session: "s333333444444" });
+    assert.equal(other.status, 200);
+    assert.equal(other.body.duplicate, undefined);
+  } finally {
+    await srv.close();
+  }
+});
+
+test("a request the gate cannot read is answered 400 and said in its log", async () => {
+  const lines = [];
+  const srv = await start({ log: (l) => lines.push(l) });
+  try {
+    const res = await fetch(`${srv.base}/cast`, { method: "POST", headers: { "content-type": "application/json" },
+      body: '{"session":"s1","candidates":[{"id":"a\\q"}]}' });
+    assert.equal(res.status, 400);
+    assert.ok(lines.some((l) => /^\[http\] POST \/cast -> 400: /.test(l)), lines.join("\n"));
+    const state = await (await fetch(`${srv.base}/state`)).json();
+    assert.equal(state.stats.bad, 1);
+  } finally {
+    await srv.close();
+  }
+});

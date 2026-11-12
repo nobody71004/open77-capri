@@ -34,7 +34,7 @@ function createDevServer(options = {}) {
   const pollers = new Map(); // session -> { first, last, polls }
   const now = options.now ?? (() => Date.now());
   const say = options.log ?? ((line) => console.log(line));
-  const stats = { casts: 0, refused: 0, polls: 0, reports: 0 };
+  const stats = { casts: 0, again: 0, refused: 0, bad: 0, polls: 0, reports: 0 };
 
   function readBody(req) {
     return new Promise((resolve, reject) => {
@@ -129,6 +129,13 @@ function createDevServer(options = {}) {
           token: typeof body.token === "string" && TOKEN_RX.test(body.token) ? body.token : "",
         };
         const result = mo.cast(player, Array.isArray(candidates) ? candidates : [], now(), origin);
+        if (result.ok && result.duplicate) {
+          stats.again += 1;
+          const seen = mo._state.events.find((e) => e.castId === result.event.castId);
+          say(`[cast] again from ${key} token=${origin.token}: seq=${seen ? seen.seq : "?"} is on already (the game sent it ` +
+            `once more: its first try got no answer)`);
+          return send(res, 200, result);
+        }
         if (result.ok) {
           stats.casts += 1;
           const e = result.event;
@@ -203,6 +210,8 @@ function createDevServer(options = {}) {
       }
       send(res, 404, { error: "not_found" });
     } catch (e) {
+      stats.bad += 1;
+      say(`[http] ${req.method} ${String(req.url || "").split("?")[0]} -> 400: ${e.message}`);
       send(res, 400, { error: e.message });
     }
   });

@@ -33,7 +33,7 @@ SERVIDOR = VOZ_DIR + "/servidor.json"
 VOICES_DIR = VOZ_DIR + "/voces"
 MARK = "XyberRP server voice"
 VOICE_URL_RX = re.compile(r"^https://([a-z0-9.-]{3,253})/capri-voice-[0-9a-f]{12,64}/v1$")
-SECRET_RX = re.compile(r"capri-voice-[0-9A-Za-z]{6,}")
+SECRET_RX = re.compile(r"capri-voice-[0-9a-fA-F]{12,}")   # its path: capri-voice-<24 hex>
 
 
 class VozError(Exception):

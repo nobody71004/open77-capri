@@ -14,6 +14,24 @@ Why other PCs heard a Windows voice (2026-11-12)
   A player's own voice choice (ElevenLabs, OpenAI...) is left alone.  Capri Voz logs every line to
   red4ext\plugins\CapriPersonalityConstruct\CapriVoz\cache\capri_voz.log.
 
+Why "mass over ride" did nothing, and a cast showed on one PC only (2026-11-12, later)
+  1. Mass Override is cast when Capri's brain answers with it.  The brain answers an explicit
+     request at once, by itself -- but it only knew "mass override" as one word or two.  Typed as
+     "mass over ride", the request went to the model, which answered with banter and no cast: on
+     the desktop nothing happened.  The brain now hears it however it is typed (mass over ride,
+     massoverride, mass-override, mass overide, mas override...), never "massive" or "the mass of".
+     The kit's "brain" step puts the new program on the machine: the brain's journal shows, for
+     each request, whether the shortcut answered it or the model did (mo=model / mo=no).
+  2. A cast travels to the gate in one request.  From a PC whose connection to the machine drops
+     now and then (the laptop that night: "Failed to connect ... after 21025 ms", "Recv failure:
+     Connection was reset"), that one request was lost: the cast ran on that screen only.  Now
+     the game sends it again until the gate answers (every 3 to 5 s, for up to 26 s), the gate
+     answers a cast it already has (the same token) with that cast -- never run or charged twice --
+     and every report a game sends names its own session.
+  The "brain" step also shows (read only) the brain's last requests, both gates' last casts, and
+  what on the machine could drop a player's connection (firewall limits, the kernel's dropped
+  connection attempts, the connection table, nginx's limits hit).
+
 Why a Mass Override showed on the caster's screen only (2026-11-12)
   The gate's feed only started on a PC after that PC cast once, it only carried the mode for that
   PC's NEXT cast, and every PC registered with the gate under its V's entity id -- the same on
@@ -62,12 +80,14 @@ The bats (run them in this order)
   C2-Capri-brain-voice-and-Mass-Override-on-Staging.bat   LEAVE STAGING FIRST.  1. her voice on
       the machine (once for the machine: venv, Pocket TTS, her voice files from Staging's package,
       a test line in English and Spanish, its service, its nginx location with a limit; the web
-      server put back by itself on any failure), asked from this PC; 2. Staging's Mass Override
-      gate updated and asked; 3. the new package: the live one with the brain wired in, Mass
+      server put back by itself on any failure), asked from this PC; 2. the brain hears Mass
+      Override however it is typed (its program updated, kept first, checked by node, restarted,
+      asked; put back by itself on any failure; once for the machine); 3. Staging's Mass Override
+      gate updated and asked; 4. the new package: the live one with the brain wired in, Mass
       Override for everyone and Capri Voz using her server voice, compiled with YOUR GAME'S OWN
       Redscript and CapriVoz.ps1 checked by PowerShell's own parser -- nothing is sent unless both
-      pass -- into Staging's mod store and server.jsonc (kept first, --check-config run); 4. the
-      brain's limits; 5. Staging restarted; 6. what Staging hands out, checked, her voice asked.
+      pass -- into Staging's mod store and server.jsonc (kept first, --check-config run); 5. the
+      brain's limits; 6. Staging restarted; 7. what Staging hands out, checked, her voice asked.
   C3-Capri-brain-voice-and-Mass-Override-on-XyberRP.bat   The same for live XyberRP -- after
       Staging was fine in game.  Nobody may be on XyberRP.
   C2b-Put-Staging-Capri-back.bat / C3b-Put-XyberRP-Capri-back.bat   The server's Capri back to the
@@ -89,7 +109,14 @@ Logs (tell Claude "done": it reads them)
   ..\open77-av-kit\avkit-restart-*.log -- the restarts.
   No log holds the brain's private address, a server address or a key.
 
+Two bats at once
+  Each step that changes the machine takes its turn (/root/capri-kit/kit.lock): a second bat's
+  step waits for the first one's, and says what it waits for.  (C2 and C3 started together on
+  2026-11-12 both downloaded her voice's Python into the same file at the same moment; one of
+  them failed.)
+
 On the machine
+  /root/capri-kit/brain/: the brain's program before each update (0600).
   /opt/capri-voice: her voice (venv, capri_voice_server.py, voces\, hf\ her models, selftest\);
   capri-voice.service (user capri-voice, 127.0.0.1:8891, journalctl -u capri-voice: one line per
   line she said -- never the text); /root/capri-kit/voice.json (0600, her voice's private path);

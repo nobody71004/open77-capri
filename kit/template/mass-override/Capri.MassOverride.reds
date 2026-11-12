@@ -219,7 +219,9 @@ public class CapriMassOverride extends IScriptable {
         if IsDefined(prefs) {
             token = prefs.NewToken();
         }
-        MassOverrideCastPost.Register(game, playerId, MassOverrideCastPost.Body(player, targets, blackout ? "blackout" : "blink", token));
+        // Sent again until the gate answers (MassOverrideCastSend): one dropped connection must not keep it
+        // from everybody else.
+        MassOverrideCastSend.Start(game, MassOverrideCastPost.Body(player, targets, blackout ? "blackout" : "blink", token), token);
         stats.classes = MassOverrideProbe.Classes(targets);
         // The city's own lights: street lamps, building lights and neon answer to the city
         // light system, not to anything a probe reaches one at a time. Blink opens with

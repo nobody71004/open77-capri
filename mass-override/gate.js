@@ -98,6 +98,21 @@ function createMassOverride(options = {}) {
   // game is running (so nobody runs the other one) and the caster's token for this cast (so
   // the caster's own game skips it when the feed hands it back).
   function cast(player, candidates, now, origin = null) {
+    // The same cast sent again: a game sends its cast once more while no answer has come (a connection
+    // that dropped, 2026-11-12), so the cast this gate already has is answered as it is -- nothing
+    // charged twice, nothing handed out twice, no recharge refusal for the caster's own retry.
+    const sentToken = origin && typeof origin.token === "string" ? origin.token : "";
+    if (sentToken) {
+      const seen = events.find((e) => e.token === sentToken && e.casterId === player.id);
+      if (seen) {
+        return {
+          ok: true,
+          duplicate: true,
+          event: { castId: seen.castId, casterId: seen.casterId, targets: [], areas: seen.areas, mode: seen.mode,
+            expiresAt: seen.expiresAt, at: seen.at, token: seen.token },
+        };
+      }
+    }
     const reason = check(player, now);
     if (reason !== REASONS.OK) return { ok: false, reason };
 

@@ -430,6 +430,26 @@ What changed:
 
 Checked: the game's own compiler (REDscript 1.0.0-preview.22, the owner's laptop): 107 files, 521 warnings, 0 errors, nothing to migrate; `node --test` for the gate (15 dev-server tests, 5 new: sessions, positions, `/casts`, older builds, bad input, pollers); `reds-lint` clean.
 
+## 1.16.18: a cast reaches the gate from a PC whose connection drops
+
+On 2026-11-12 a cast from the laptop ran on the laptop only: its one `POST /cast` was lost to the PC's
+connection ("Recv failure: Connection was reset"; minutes before, "Failed to connect ... after 21025 ms"),
+so the gate never had it and no other game ran it. Since 1.16.18:
+
+- `MassOverrideCastSend` posts the cast straight to `/cast` (the gate registers a session it does not
+  know; a 404 from an older gate registers first) and sends it again while no answer has come: tries at
+  0, 3, 7, 12, 17 and 22 s, given up after 26 s with a log line saying the cast ran on that screen only.
+  A try still out is not waited for.
+- The gate answers a cast whose token it already has with that cast (`duplicate: true`): never handed out
+  twice, never charged twice, no recharge refusal for the caster's own retry (`[cast] again from ...` in
+  its log, `stats.again` in `/state`). A body it cannot read is said in its log (`[http] ... -> 400`).
+- Every report (`/report`, phase `log`) carries the game's `session`: `playerId` is V's entity id,
+  `dynamic: '1'` on every PC.
+
+The brain (`client/mcp/capri-brain.mjs`, build `2026-11-12.1`) also answers Mass Override however V types
+it -- "mass over ride" went to the model, which answered with banter and no cast -- and its journal says
+for each request whether the model chose Mass Override itself (`mo=model`) or not (`mo=no`).
+
 ## Verification status
 
 - Node tests: `gate.test.js` 13, `engine-adapter.test.js` 7, `dev-server.test.js` 10, `reds-lint.test.js` 8, `reds-lint-angle.test.js` 2 - 40/40 pass (run each file with `node --test`).

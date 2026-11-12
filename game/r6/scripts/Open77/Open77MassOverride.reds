@@ -194,7 +194,9 @@ public class MassOverrideLog {
     if !IsDefined(prefs) { return; }
     let lines: array<String> = prefs.TakeLog();
     if ArraySize(lines) == 0 { return; }
+    // playerId is V's entity id -- the same on every PC -- so the session says which game this is
     let body: String = "{\"phase\":\"log\",\"playerId\":" + MassOverrideLog.Quote(playerId)
+      + ",\"session\":" + MassOverrideLog.Quote(prefs.Session())
       + ",\"build\":\"" + MassOverrideBuild.Version() + "\""
       + ",\"at\":" + MassOverrideLog.Quote(at)
       + ",\"lines\":[";
@@ -830,6 +832,8 @@ public class MassOverrideCastPost extends DelayCallback {
   public let isRegister: Bool;
   public let isReport: Bool; // a diagnostics post: its reply applies nothing
   public let castBody: String;
+  public let send: ref<MassOverrideCastSend>; // a try of this cast (MassOverrideCastSend), else none
+  public let attempt: Int32;
   private let keepAlive: Bool; // the object kept itself scheduled for its reply
 
   // The JSON body for /cast: the caster's ids (V's entity id, the same on every PC, and this game's
@@ -922,6 +926,10 @@ public class MassOverrideCastPost extends DelayCallback {
   private cb func OnReply(response: ref<HttpResponse>) -> Void {
     let ok: Bool = IsDefined(response) && response.GetStatusCode() == 200;
     if this.isReport { return; }
+    if IsDefined(this.send) {
+      this.send.Answered(this.attempt, response, this.isRegister);
+      return;
+    }
     if this.isRegister {
       MassOverrideLog.Write("register " + (ok ? "ok" : "failed") + " -> " + (ok ? "sending cast" : "cast not sent"));
       if ok {
@@ -937,6 +945,107 @@ public class MassOverrideCastPost extends DelayCallback {
       let why: String = IsDefined(response) ? response.GetText() : "no response";
       MassOverrideLog.Write("server cast refused status=" + ToString(status) + " " + why);
     }
+  }
+}
+
+// A CAST HANDED TO THE GATE, sent again until the gate has it. On 2026-11-12 a cast from a PC whose
+// connection to the server dropped now and then ("Recv failure: Connection was reset", "Failed to
+// connect ... after 21025 ms") ran on that PC only: the one request that carried it was lost, and
+// no other game ever heard of it. Now the cast goes straight to /cast (the gate registers a game it
+// does not know itself) and is sent again while no answer has come -- a try still out is not waited
+// for: the gate answers a cast it already has (the same token) with that cast, so it is never run
+// or charged twice. A refusal (409: recharging...) is an answer too. Each try and the outcome are in
+// the cast's log lines, which go to the gate with its reports.
+public class MassOverrideCastSend extends DelayCallback {
+  public let game: GameInstance;
+  public let body: String;
+  public let token: String;
+  public let attempts: Int32;
+  public let answered: Bool;
+  public let startedAt: Float;
+  public let registered: Bool;
+
+  public static func MaxAttempts() -> Int32 { return 6; }
+  // A cast older than this is not sent any more: the others would only see its last seconds.
+  public static func GiveUpSeconds() -> Float { return 26.0; }
+  // Seconds from one try to the next while no answer has come.
+  public static func Wait(attempt: Int32) -> Float {
+    if attempt <= 1 { return 3.0; }
+    if attempt == 2 { return 4.0; }
+    return 5.0;
+  }
+
+  public static func Start(game: GameInstance, body: String, token: String) -> Void {
+    let send: ref<MassOverrideCastSend> = new MassOverrideCastSend();
+    send.game = game;
+    send.body = body;
+    send.token = token;
+    send.startedAt = EngineTime.ToFloat(GameInstance.GetSimTime(game));
+    GameInstance.GetDelaySystem(game).DelayCallback(send, 0.0, false);
+  }
+
+  // One try, or the check after one: nothing once the gate has answered.
+  public func Call() -> Void {
+    if this.answered { return; }
+    let took: Float = EngineTime.ToFloat(GameInstance.GetSimTime(this.game)) - this.startedAt;
+    if this.attempts >= MassOverrideCastSend.MaxAttempts() || took > MassOverrideCastSend.GiveUpSeconds() {
+      MassOverrideLog.Write("server cast NOT delivered after " + ToString(this.attempts) + " tries in "
+        + ToString(RoundF(took)) + " s (token " + this.token + "): it ran on this screen only");
+      return;
+    }
+    this.attempts += 1;
+    // the delay system holds this object (and the state the tries' replies write to) until the next check
+    GameInstance.GetDelaySystem(this.game).DelayCallback(this, MassOverrideCastSend.Wait(this.attempts), false);
+    if this.attempts > 1 {
+      MassOverrideLog.Write("server cast: no answer yet, try " + ToString(this.attempts) + " at "
+        + ToString(RoundF(took)) + " s (token " + this.token + ")");
+    }
+    this.Post(MassOverrideFeed.Base() + "/cast", this.body, false);
+  }
+
+  private func Post(url: String, body: String, register: Bool) -> Void {
+    let post: ref<MassOverrideCastPost> = new MassOverrideCastPost();
+    post.game = this.game;
+    post.body = body;
+    post.url = url;
+    post.isRegister = register;
+    post.send = this;
+    post.attempt = this.attempts;
+    GameInstance.GetDelaySystem(this.game).DelayCallback(post, 0.0, false);
+  }
+
+  // A try's answer. 200: the gate has it (sent once more, it answers with the cast it has). 409: refused, said.
+  // 404: an older gate that wants the game registered first -- registered here, the next try follows.
+  public func Answered(attempt: Int32, response: ref<HttpResponse>, register: Bool) -> Void {
+    let status: Int32 = IsDefined(response) ? response.GetStatusCode() : -1;
+    if register {
+      MassOverrideLog.Write("server cast: registered with an older gate (status " + ToString(status) + ")");
+      this.registered = status == 200;
+      return;
+    }
+    if this.answered { return; }
+    let took: Float = EngineTime.ToFloat(GameInstance.GetSimTime(this.game)) - this.startedAt;
+    if status == 200 {
+      this.answered = true;
+      MassOverrideLog.Write("server cast ok on try " + ToString(attempt) + " of " + ToString(this.attempts) + " ("
+        + ToString(RoundF(took)) + " s): handed to every other game in the session");
+      return;
+    }
+    if status == 409 {
+      this.answered = true;
+      MassOverrideLog.Write("server cast refused on try " + ToString(attempt) + ": " + response.GetText());
+      return;
+    }
+    if status == 404 && !this.registered {
+      let prefs: ref<MassOverridePrefs> = MassOverridePrefs.Get();
+      let session: String = IsDefined(prefs) ? prefs.Session() : "";
+      this.Post(MassOverrideFeed.Base() + "/players", "{\"id\":\"" + session + "\",\"session\":\"" + session
+        + "\",\"ownsCapri\":true,\"capriSummoned\":true,\"balance\":100}", true);
+      return;
+    }
+    let why: String = IsDefined(response) ? response.GetText() : "no response";
+    MassOverrideLog.Write("server cast try " + ToString(attempt) + " failed (status " + ToString(status) + " after "
+      + ToString(RoundF(took)) + " s): " + why);
   }
 }
 

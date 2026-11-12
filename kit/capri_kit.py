@@ -46,6 +46,7 @@ import os
 import posixpath
 import re
 import shutil
+import socket
 import ssl
 import subprocess
 import sys
@@ -61,10 +62,11 @@ import capri_voz as Z  # noqa: E402
 
 REMOTE = os.path.join(HERE, "remote", "capri_server.py")
 EXTRAS = {"voice": [os.path.join(HERE, "remote", "capri_voice_server.py")],
-          "gate": [os.path.join(HERE, "remote", "gate", "gate.js"), os.path.join(HERE, "remote", "gate", "dev-server.js")]}
+          "gate": [os.path.join(HERE, "remote", "gate", "gate.js"), os.path.join(HERE, "remote", "gate", "dev-server.js")],
+          "brain": [os.path.join(HERE, "remote", "brain", "capri-brain.mjs")]}
 SCC = os.path.join(HERE, "capri_scc.py")
 SECRET_RX = re.compile(r"capri-brain-[0-9A-Za-z]{6,}")
-VOICE_SECRET_RX = re.compile(r"capri-voice-[0-9A-Za-z]{6,}")
+VOICE_SECRET_RX = re.compile(r"capri-voice-[0-9a-fA-F]{12,}")   # its path: capri-voice-<24 hex>, never a log name
 IPV4_RX = re.compile(r"\b(?!127\.0\.0\.1\b)(?!0\.0\.0\.0\b)\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b")
 ALREADY = 5
 ROLE_NAMES = {"staging": "open77-xbuniverse-staging", "production": "open77-xbuniverse"}
@@ -161,20 +163,65 @@ class Machine:
         return code, res
 
 
+# ------------------------------------------------------------------------------------------------ asked from here
+def dropped(e) -> bool:
+    """A request that failed before any answer came back: the connection did not come up (WinError 10060), was reset,
+    or the name did not resolve -- what a moment's drop in the network between this PC and the machine looks like.
+    Never an HTTP answer, and never a certificate that does not check out."""
+    if isinstance(e, urllib.error.HTTPError):
+        return False
+    reason = e.reason if isinstance(e, urllib.error.URLError) else e
+    if isinstance(reason, ssl.SSLCertVerificationError):
+        return False
+    return isinstance(reason, (ConnectionError, TimeoutError, socket.gaierror)) or (
+        isinstance(e, urllib.error.URLError) and isinstance(reason, OSError))
+
+
+def probe(host, log, port=443) -> bool:
+    """Right after a dropped request: does the machine take a connection from this PC now (TCP only, nothing sent)?"""
+    t0 = time.time()
+    try:
+        with socket.create_connection((host, port), timeout=10):
+            log(f"     right after, {host}:{port} takes a connection from this PC in {time.time() - t0:.2f} s: the "
+                f"network between this PC and the machine dropped that one request")
+            return True
+    except OSError as e:
+        log(f"     right after, {host}:{port} does not take a connection from this PC either ({time.time() - t0:.1f} s: "
+            f"{clean(e)}): this PC's network, or the machine's, is down")
+        return False
+
+
+def twice(what, host, log, ask):
+    """ASK(): a request the network dropped (dropped()) is said, the machine probed, and asked once more -- one drop
+    in the network is not a failure of what is checked.  Anything else is raised as it came."""
+    for attempt in (1, 2):
+        t0 = time.time()
+        try:
+            return ask()
+        except (urllib.error.URLError, OSError) as e:
+            if attempt == 2 or not dropped(e):
+                raise
+            log(f"  (from this PC, {what}: the network dropped the request after {time.time() - t0:.1f} s: {clean(e)})")
+            probe(host, log)
+            log("     asked once more:")
+
+
 # ------------------------------------------------------------------------------------------------ the brain, from here
 def ask_brain(url, log, chat=True):
     """The brain the way a player's game asks it (HTTPS, the certificate checked): its models, then (chat) one short
     question.  True when both answered."""
     host = url.split("/")[2]
     ctx = ssl.create_default_context()
-    t0 = time.time()
-    try:
+    def models():
+        t0 = time.time()
         with urllib.request.urlopen(urllib.request.Request(url + "/models", headers={"Accept": "application/json"}),
                                     timeout=30, context=ctx) as r:
-            body = json.loads(r.read().decode("utf-8", errors="replace"))
+            return json.loads(r.read().decode("utf-8", errors="replace")), time.time() - t0
+    try:
+        body, took = twice("the brain's models", host, log, models)
         ids = [m.get("id") for m in body.get("data") or [] if isinstance(m, dict)]
         log(f"  from this PC, as a player's game asks it: https://{host}/capri-brain-<secret>/v1/models -> 200 in "
-            f"{time.time() - t0:.2f} s: {', '.join(ids)}")
+            f"{took:.2f} s: {', '.join(ids)}")
         if "capri-brain" not in ids:
             log("  !! it does not offer the capri-brain model")
             return False
@@ -187,18 +234,62 @@ def ask_brain(url, log, chat=True):
         {"role": "system", "content": "You are Capri, V's personality construct. Answer in one short sentence."},
         {"role": "user", "content": "V says: Capri, can you hear me?"}]}).encode("utf-8")
     t0 = time.time()
-    try:
+
+    def question():
+        t1 = time.time()
         req = urllib.request.Request(url + "/chat/completions", data=body, method="POST",
                                      headers={"Content-Type": "application/json", "Accept": "application/json"})
         with urllib.request.urlopen(req, timeout=180, context=ctx) as r:
-            reply = json.loads(r.read().decode("utf-8", errors="replace"))
+            return json.loads(r.read().decode("utf-8", errors="replace")), time.time() - t1
+    try:
+        reply, took = twice("the brain's question", host, log, question)
         text = ((reply.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
-        log(f"  one short question from this PC: answered in {time.time() - t0:.1f} s by {reply.get('model')}: "
+        log(f"  one short question from this PC: answered in {took:.1f} s by {reply.get('model')}: "
             f"{text.strip()[:160]!r}")
         return bool(text.strip())
     except (urllib.error.URLError, OSError, ValueError) as e:
         log(f"  !! the question from this PC got no answer after {time.time() - t0:.1f} s: {clean(e)}")
         return False
+
+
+# What a game with Mass Override sends the brain (its action list names mass_override) and what V types, the way the
+# owner typed it on 2026-11-12 ("mass over ride": nothing happened) and the way that worked ("MASS OVERRIDE").
+BRAIN_MO_SYSTEM = 'Capri kit check.\n {"do":"mass_override","target":...} change everything around V at once\n'
+BRAIN_MO_ASKS = ("mass over ride", "MASS OVERRIDE")
+
+
+def ask_brain_mo(url, log) -> bool:
+    """The brain asked from this PC the way a game is when V types Mass Override: each of BRAIN_MO_ASKS must come back
+    as a cast at once (the brain's shortcut: no model call)."""
+    host = url.split("/")[2]
+    ctx = ssl.create_default_context()
+    ok = True
+    for said in BRAIN_MO_ASKS:
+        body = json.dumps({"model": "capri-brain", "max_tokens": 32, "messages": [
+            {"role": "system", "content": BRAIN_MO_SYSTEM}, {"role": "user", "content": said}]}).encode("utf-8")
+
+        def chat(body=body):
+            t0 = time.time()
+            req = urllib.request.Request(url + "/chat/completions", data=body, method="POST",
+                                         headers={"Content-Type": "application/json", "Accept": "application/json"})
+            with urllib.request.urlopen(req, timeout=120, context=ctx) as r:
+                return json.loads(r.read().decode("utf-8", errors="replace")), time.time() - t0
+        try:
+            reply, took = twice(f"the brain ({said!r})", host, log, chat)
+            content = ((reply.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+            try:
+                said_back = json.loads(content)
+            except ValueError:
+                said_back = {}
+            acts = [x.get("do") for x in (said_back.get("actions") or []) if isinstance(x, dict)]
+            good = "mass_override" in acts and took < 10
+            log(f"  from this PC, V types {said!r}: answered in {took:.2f} s, actions {acts}, "
+                f"{said_back.get('say')!r}" + ("" if good else "  !! NOT a cast: the game would do nothing"))
+            ok = ok and good
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            log(f"  !! from this PC the brain does not answer {said!r}: {clean(e)}")
+            ok = False
+    return ok
 
 
 # ------------------------------------------------------------------------------------------------ her voice, from here
@@ -220,17 +311,19 @@ def ask_voice(url, log):
         body = json.dumps({"model": "capri-voice", "input": text, "voice": "capri", "language": lang,
                            "response_format": "wav"}).encode("utf-8")
         t0 = time.time()
-        try:
+
+        def speech(body=body):
+            t1 = time.time()
             req = urllib.request.Request(url + "/audio/speech", data=body, method="POST",
                                          headers={"Content-Type": "application/json", "Accept": "audio/wav"})
             with urllib.request.urlopen(req, timeout=90, context=ctx) as r:
-                data = r.read()
-                voice = r.headers.get("X-Capri-Voice")
-                gen = r.headers.get("X-Capri-Generated-Ms")
+                return r.read(), r.headers.get("X-Capri-Voice"), r.headers.get("X-Capri-Generated-Ms"), time.time() - t1
+        try:
+            data, voice, gen, took = twice(f"her voice ({lang})", host, log, speech)
             secs = wav_seconds(data)
             good = data[:4] == b"RIFF" and secs >= 1.0 and voice == "capri"
             log(f"  from this PC, as a player's Capri Voz asks it: https://{host}/capri-voice-<secret>/v1/audio/speech "
-                f"({lang}) -> {len(data)} B, {secs:.1f} s of audio in {time.time() - t0:.1f} s (made in {gen} ms on "
+                f"({lang}) -> {len(data)} B, {secs:.1f} s of audio in {took:.1f} s (made in {gen} ms on "
                 f"the server), voice {voice}" + ("" if good else "  !! not her own voice, or not audio"))
             ok = ok and good
         except (urllib.error.URLError, OSError, ValueError, EOFError) as e:
@@ -360,6 +453,9 @@ def cmd_check(a, log):
             os.remove(local)
         if url:
             if not ask_brain(url, log):
+                rc = 1
+            log("===== Mass Override from this PC, the way V types it (read only: the brain answers, nothing is cast)")
+            if not ask_brain_mo(url, log):
                 rc = 1
         else:
             log("  !! the brain's address could not be read from the machine")
@@ -644,15 +740,36 @@ def cmd_gate(a, log):
     return 0 if ask_gate(MO.BASES[a.role][0], log) else 1
 
 
+def cmd_brain(a, log):
+    """The brain's program updated (remote/capri_server.py brain): it hears Mass Override however V types it.  Then
+    asked from this PC the way a game is.  Machine-wide: one brain for both servers; nothing to do the second time."""
+    with Machine(a, log, extra=("brain",)) as m:
+        log("===== the brain hears Mass Override however V types it (\"mass over ride\" did nothing on 2026-11-12)")
+        code, res = m.call("brain")
+        url = None
+        if code in (0, 3):
+            local = os.path.join(HERE, "work", f"brain-{time.strftime('%Y%m%d-%H%M%S')}.url")
+            os.makedirs(os.path.dirname(local), exist_ok=True)
+            m.h.get(posixpath.join(m.work, "brain.url"), local)
+            url = open(local, encoding="utf-8").read().strip()
+            os.remove(local)
+    if code not in (0, 3) or not url:
+        return 1
+    log("===== the brain from this PC, as a player's game asks it")
+    return 0 if ask_brain_mo(url, log) else 1
+
+
 def ask_gate(base, log):
     """The gate the way a game polls it (HTTPS, the certificate checked): GET /casts answers with its cursor."""
-    t0 = time.time()
-    try:
+    def casts():
+        t0 = time.time()
         with urllib.request.urlopen(base + "/casts?since=0&session=capri-kit-pc", timeout=30,
                                     context=ssl.create_default_context()) as r:
-            text = r.read().decode("utf-8", errors="replace")
+            return r.read().decode("utf-8", errors="replace"), time.time() - t0
+    try:
+        text, took = twice("the gate", base.split("/")[2], log, casts)
         first = text.splitlines()[0] if text else ""
-        log(f"  from this PC, as a game polls it: {base.split('/', 3)[-1]}/casts -> 200 in {time.time() - t0:.2f} s "
+        log(f"  from this PC, as a game polls it: {base.split('/', 3)[-1]}/casts -> 200 in {took:.2f} s "
             f"(cursor {first}, {max(0, len(text.splitlines()) - 1)} cast(s) on now)")
         return bool(re.match(r"^\d+$", first))
     except (urllib.error.URLError, OSError) as e:
@@ -690,7 +807,7 @@ def cmd_putback(a, log):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("command", choices=["check", "publish", "verify", "putback", "player", "guard", "guard-putback",
-                                        "voice", "gate"])
+                                        "voice", "gate", "brain"])
     ap.add_argument("--role", default="", choices=["", "staging", "production"])
     ap.add_argument("--roles", default="")
     ap.add_argument("--hook", default="auto", choices=["auto", "wrap", "patch"])
@@ -721,7 +838,7 @@ def main(argv=None):
         if a.command != "player" and not (a.host and a.key_from):
             raise Failed("--host USER@HOST and --key-from STUDIO_ID (the bat gives them)")
         rc = {"check": cmd_check, "publish": cmd_publish, "verify": cmd_verify, "putback": cmd_putback,
-              "guard": cmd_guard, "guard-putback": cmd_guard, "voice": cmd_voice, "gate": cmd_gate,
+              "guard": cmd_guard, "guard-putback": cmd_guard, "voice": cmd_voice, "gate": cmd_gate, "brain": cmd_brain,
               "player": lambda a, log: (player(find_game(a.game), log) or 0)}[a.command](a, log)
     except (Failed, W.BuildError) as e:
         log(f"!! {e}")
