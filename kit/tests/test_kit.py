@@ -927,6 +927,28 @@ def test_brain_remote():
               "MASS_OVERRIDE_WORDS" in now and "BRAIN_BUILD" not in now, out[-1200:])
         check("brain (edited by hand): 'mass over ride' is a cast now",
               [x.get("do") for x in brain_says(m, "mass over ride").get("actions") or []] == ["mass_override"])
+        patched = open(m.brain_file).read()
+        code, out, res, work = remote_env(m, "brain", work=brain_work(m), env=env)
+        check("brain (edited by hand) again: it hears it, left as it is -- never replaced whole", code == 3 and
+              res.get("why") == "already" and open(m.brain_file).read() == patched, out[-700:])
+    finally:
+        brain_stop(m)
+        m.close()
+    # somebody else's build of the brain that hears it already (2026-11-12: another build, its own backend and
+    # rules, with this kit's recognizer in it): left as it is, not restarted
+    theirs = os.path.join(tempfile.mkdtemp(), "capri-brain.mjs")
+    open(theirs, "w").write(open(BRAIN_NEW).read().replace("const BRAIN_BUILD = '", "const THEIR_BUILD = '")
+                            .replace("build: BRAIN_BUILD,", "build: THEIR_BUILD,").replace("build ${BRAIN_BUILD}", "build ${THEIR_BUILD}")
+                            + "\n// their own rules here\n")
+    m = brain_machine(theirs)
+    try:
+        r0 = open(os.path.join(m.base, "brain-restarts")).read()
+        code, out, res, work = remote_env(m, "brain", work=brain_work(m), env=env)
+        check("brain somebody else built, that hears it already: 3, left as it is, not restarted", code == 3 and
+              res.get("why") == "already" and "it hears Mass Override however V types it already" in out and
+              open(m.brain_file).read() == open(theirs).read() and
+              open(os.path.join(m.base, "brain-restarts")).read() == r0, out[-900:])
+        check("brain somebody else built: brain.url for the kit", os.path.isfile(os.path.join(work, "brain.url")))
     finally:
         brain_stop(m)
         m.close()

@@ -2151,6 +2151,23 @@ def brain_script(pid: int) -> tuple[str, str]:
     return script, node
 
 
+def brain_record() -> dict:
+    """What this kit last put in place as the brain's program (STATE_DIR/brain.json): its sha256, build, when."""
+    try:
+        return json.load(open(os.path.join(STATE_DIR, "brain.json"), encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def save_brain_record(**kw) -> None:
+    os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
+    path = os.path.join(STATE_DIR, "brain.json")
+    fd = os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump({**kw, "at": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")}, f, indent=1)
+    os.replace(path + ".tmp", path)
+
+
 def brain_mo_block(new: str) -> str:
     """The new file's Mass Override recognizer: from its MASS_OVERRIDE_WORDS line to the end of MASS_OVERRIDE_REQUEST."""
     m = re.search(r"^const MASS_OVERRIDE_WORDS = .*?^\);\n", new, re.S | re.M)
@@ -2181,15 +2198,17 @@ def brain_post(port: int, said: str, timeout=10) -> tuple[int, dict, float]:
     return st, reply if isinstance(reply, dict) else {}, time.time() - t0
 
 
-def brain_hears(port: int) -> list[str]:
-    """Each of BRAIN_ASKS to the brain here: what is wrong ([] when every one comes back as a cast at once)."""
+def brain_hears(port: int, first: bool = False) -> list[str]:
+    """Each of BRAIN_ASKS to the brain here: what is wrong ([] when every one comes back as a cast at once).  FIRST:
+    the question before anything changes -- a "no" there is what the update is for, not an error."""
     wrong = []
     for said in BRAIN_ASKS:
         st, reply, took = brain_post(port, said)
         acts = [x.get("do") for x in reply.get("actions") or [] if isinstance(x, dict)]
         ok = st == 200 and "mass_override" in acts and took < 5
+        miss = "  (not a cast: the update is for this)" if first else "  !! not a cast"
         say(f"  {said!r} -> {st or 'no answer'} in {took:.2f} s: " + (f"actions {acts}, {reply.get('say')!r}" if st == 200
-                                                                     else "no reply") + ("" if ok else "  !! not a cast"))
+                                                                     else "no reply") + ("" if ok else miss))
         if not ok:
             wrong.append(said)
     return wrong
@@ -2309,6 +2328,24 @@ def cmd_brain(a) -> int:
     cur_sha = hashlib.sha256(cur.encode("utf-8")).hexdigest()
     say(f"its program: {script} ({len(cur)} B, sha256 {cur_sha[:16]}...), run by {node}")
     health = u.get("health") if isinstance(u.get("health"), dict) else {}
+    # The program is this kit's when it is a build the kit shipped, or exactly what the kit last put there. Anybody
+    # else's that hears it already is left as it is: on 2026-11-12 somebody put another build of the brain on the
+    # machine (its own backend and rules) half an hour after this kit's update, with this kit's recognizer in it.
+    rec = brain_record()
+    # (a program the kit only patched stays somebody else's: replaced whole, their own changes would go)
+    ours = cur_sha in BRAIN_KNOWN or (rec.get("sha256") == cur_sha and rec.get("script") == script and rec.get("whole"))
+    if rec.get("sha256") and not ours and rec.get("script") == script:
+        say(f"  (changed since this kit put it there on {rec.get('at')}: sha256 {rec['sha256'][:16]}... then)")
+    if cur != new and not ours:
+        say("asked first, the way a game with Mass Override asks it:")
+        if not brain_hears(port, first=True):
+            whose = f"build {health['build']}" if health.get("build") else "not one of this kit's builds"
+            say(f"it hears Mass Override however V types it already: its program is left as it is ({whose})")
+            fd = os.open(os.path.join(a.work, "brain.url"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
+                f.write(b["url"] + "\n")
+            result(command="brain", changed=False, why="already", build=health.get("build"))
+            return NO
     if cur == new:
         say(f"it is this kit's build already ({build}); running: {health.get('build') or '?'}")
         wrong = brain_hears(port)
@@ -2322,9 +2359,8 @@ def cmd_brain(a) -> int:
         data, how = new, "the same file, restarted"
     elif cur_sha in BRAIN_KNOWN:
         data, how = new, f"replaced whole: it was this kit's earlier build {BRAIN_KNOWN[cur_sha]}"
-    elif re.search(r"^const BRAIN_BUILD = '[^']+';", cur, re.M) and "MASS_OVERRIDE_WORDS" in cur:
-        was = re.search(r"^const BRAIN_BUILD = '([^']+)';", cur, re.M).group(1)
-        data, how = new, f"replaced whole: it was this kit's build {was}"
+    elif ours:
+        data, how = new, f"replaced whole: it is what this kit put there on {rec.get('at')} ({rec.get('build') or rec.get('how')})"
     elif cur.count(BRAIN_OLD_RX) == 1:
         data, how = cur.replace(BRAIN_OLD_RX, block), "its Mass Override recognizer replaced, the rest of it as it was"
         build = None
@@ -2381,6 +2417,8 @@ def cmd_brain(a) -> int:
     code, j = run(["journalctl", "-u", unit, "-n", "40", "--no-pager", "-o", "short-iso"], timeout=20)
     for l in [l for l in j.splitlines() if "[capri-brain]" in l][-4:]:
         say("  journal: " + l[:220])
+    save_brain_record(sha256=hashlib.sha256(data.encode("utf-8")).hexdigest(), script=script, build=h.get("build"),
+                      how=how, kept=kept, whole=data == new)
     fd = os.open(os.path.join(a.work, "brain.url"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
         f.write(b["url"] + "\n")
